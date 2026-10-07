@@ -48,3 +48,4 @@ aside { display: flex; flex-direction: column; border-right: 1px solid var(--lin
 .sens input[type=range] { width: 90px; vertical-align: middle; }
 .sens label { display: flex; gap: 4px; align-items: center; }
 .cls-speck { color: #8fd3ff; }
+.cls-die2die { color: #ff3fb3; }

@@ -152,7 +152,7 @@ def detect(
     suppress_repeats: bool = typer.Option(True, help="Drop candidates reproduced one repetition pitch away (designed structure)"),
     match_ncc: float = typer.Option(0.8, help="NCC above which a candidate counts as repeated"),
     specks: bool = typer.Option(True, help="Also run the classical faint-speck finder (dust/haze a few grey levels above noise)"),
-    speck_z: float = typer.Option(7.0, help="Speck significance threshold in noise sigmas"),
+    speck_z: float = typer.Option(10.0, help="Speck significance threshold in noise sigmas"),
 ):
     """Design-free anomaly detection on any image or pyramid: outlines, JSON/CSV, overlay. No GDS."""
     import json

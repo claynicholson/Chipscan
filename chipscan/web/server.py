@@ -76,12 +76,15 @@ class Run:
         run = Run(name, cfg, src, None, WarpField(Affine2D.scaling(1.0 / px)), px, defects, amap, out, out / f"{name}.tiles")
         run.cache_dir.mkdir(parents=True, exist_ok=True)
         run.anomaly_run = True
-        sp = out / f"{name}.specks.json"
-        run.specks = json.loads(sp.read_text())["defects"] if sp.exists() else []
-        for d in run.specks:
-            d.setdefault("polygons_px", [])
-            d.setdefault("bbox_um", {k: v * px for k, v in d["bbox_px"].items()})
-        run.extract_params = {"threshold": rec.get("summary", {}).get("threshold", 0.5), "min_area_px": 6, "merge_px": 8, "include_specks": True}
+        run.specks = []
+        for extra_kind in ("specks", "die2die"):
+            fp = out / f"{name}.{extra_kind}.json"
+            if fp.exists():
+                for d in json.loads(fp.read_text())["defects"]:
+                    d.setdefault("polygons_px", [])
+                    d.setdefault("bbox_um", {k: v * px for k, v in d["bbox_px"].items()})
+                    run.specks.append(d)
+        run.extract_params = {"threshold": rec.get("summary", {}).get("threshold", 0.5), "min_area_px": 6, "merge_px": 8, "include_specks": True, "include_die2die": True}
         run.defects = run._with_specks(defects)
         return run
 
@@ -90,14 +93,18 @@ class Run:
     extract_params: dict = field(default_factory=dict)
 
     def _with_specks(self, recs: list[dict]) -> list[dict]:
-        if not self.specks or not self.extract_params.get("include_specks", True):
+        """Append the classical finds (faint specks, die-to-die) that the learned records do not already cover."""
+        inc_sp = self.extract_params.get("include_specks", True)
+        inc_dd = self.extract_params.get("include_die2die", True)
+        extra = [d for d in self.specks if (d["kind"] == "speck" and inc_sp) or (d["kind"] == "die2die" and inc_dd)]
+        if not extra:
             return recs
         out = list(recs)
         if recs:
             cxy = np.array([r["centroid_px"] for r in recs])
-            sp = [d for d in self.specks if np.hypot(*(cxy - d["centroid_px"]).T).min() > 12]
+            sp = [d for d in extra if np.hypot(*(cxy - d["centroid_px"]).T).min() > 12]
         else:
-            sp = list(self.specks)
+            sp = list(extra)
         nid = (max(r["id"] for r in recs) + 1) if recs else 0
         for d in sp:
             d = dict(d)
@@ -106,7 +113,7 @@ class Run:
             out.append(d)
         return out
 
-    def reextract(self, threshold: float, min_area_px: int, merge_px: int, include_specks: bool) -> int:
+    def reextract(self, threshold: float, min_area_px: int, merge_px: int, include_specks: bool, include_die2die: bool = True) -> int:
         """Recompute anomaly records from the stored probability map (no model run needed)."""
         from chipscan.segmentation.anomaly import anomalies_from_map
 
@@ -116,7 +123,7 @@ class Run:
             recs = anomalies_from_map(self.pred, threshold, min_area_px, self.pixel_size_um, merge_px=merge_px)
             for d in recs:
                 d.setdefault("polygons_px", [])
-            self.extract_params = {"threshold": threshold, "min_area_px": min_area_px, "merge_px": merge_px, "include_specks": include_specks}
+            self.extract_params = {"threshold": threshold, "min_area_px": min_area_px, "merge_px": merge_px, "include_specks": include_specks, "include_die2die": include_die2die}
             self.defects = self._with_specks(recs)
         return len(self.defects)
 
@@ -418,11 +425,11 @@ def create_app(config_paths: list[Path], db_path: Path | None = None) -> FastAPI
         return Response("\n".join(lines) + "\n", media_type="text/csv", headers={"Content-Disposition": f"attachment; filename={name}.reviewed.csv"})
 
     @app.post("/api/runs/{name}/reextract")
-    def reextract(name: str, threshold: float = 0.5, min_area_px: int = 6, merge_px: int = 8, include_specks: bool = True):
+    def reextract(name: str, threshold: float = 0.5, min_area_px: int = 6, merge_px: int = 8, include_specks: bool = True, include_die2die: bool = True):
         r = get_run(name)
         if not r.anomaly_run:
             raise HTTPException(400, "re-extraction applies to design-free anomaly runs")
-        n = r.reextract(threshold, min_area_px, merge_px, include_specks)
+        n = r.reextract(threshold, min_area_px, merge_px, include_specks, include_die2die)
         return {"ok": True, "n": n, "params": r.extract_params}
 
     @app.get("/api/runs/{name}/stats")

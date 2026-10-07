@@ -20,7 +20,7 @@ from chipscan.io.readers import ImageSource
 def find_specks_tile(
     img: np.ndarray,
     sigmas: tuple[float, ...] = (2.5, 4.0, 7.0),
-    z_min: float = 7.0,
+    z_min: float = 10.0,
     bg_sigma: float = 25.0,
     edge_exclude_px: int | None = None,
     min_area_px: int = 10,
@@ -35,11 +35,14 @@ def find_specks_tile(
     bg = cv2.medianBlur(np.clip(f * 255, 0, 255).astype(np.uint8), k).astype(np.float32) / 255.0
     resid = f - bg
     # robust noise estimate of the residual
-    noise = 1.4826 * float(np.median(np.abs(resid - np.median(resid)))) + 1e-6
+    # robust noise estimate with a floor of ~1.2 grey levels: clipped/saturated areas have near-zero
+    # MAD, which would turn JPEG block steps into huge z-scores
+    noise = max(1.4826 * float(np.median(np.abs(resid - np.median(resid)))), 1.2 / 255.0)
+    saturated = ndi.binary_dilation((f > 0.96) | (f < 0.04), iterations=6)
     # designed edges: strong gradients in a lightly smoothed image
     sm = ndi.gaussian_filter(f, 1.5)
     gmag = np.hypot(ndi.sobel(sm, 0), ndi.sobel(sm, 1))
-    edge = (gmag > max(8.0 * noise, 0.03)) | (np.abs(resid) > max(12.0 * noise, 0.06))  # strong edges and gross structure
+    edge = (gmag > max(8.0 * noise, 0.03)) | (np.abs(resid) > max(12.0 * noise, 0.06)) | saturated  # edges, gross structure, clipped areas
     # the DoG of the largest scale rings ~3 sigma beyond a strong edge: exclude that far
     excl = edge_exclude_px if edge_exclude_px is not None else int(np.ceil(3.0 * max(sigmas)))
     edge = ndi.binary_dilation(edge, iterations=excl)
@@ -61,13 +64,17 @@ def find_specks_tile(
     mask = zbest > z_min
     lab, n = ndi.label(mask)
     if n:
-        sizes = ndi.sum(mask, lab, index=np.arange(1, n + 1))
-        bad = np.isin(lab, np.nonzero((sizes < min_area_px) | (sizes > max_area_px))[0] + 1)
+        idx = np.arange(1, n + 1)
+        sizes = ndi.sum(mask, lab, index=idx)
+        # thin line-like components are JPEG block edges / scan lines, not dust
+        objs = ndi.find_objects(lab)
+        thin = np.array([max(o[0].stop - o[0].start, o[1].stop - o[1].start) > 4 * max(1, min(o[0].stop - o[0].start, o[1].stop - o[1].start)) for o in objs])
+        bad = np.isin(lab, idx[(sizes < min_area_px) | (sizes > max_area_px) | thin])
         mask &= ~bad
     return mask, zbest
 
 
-def find_specks(source: ImageSource, tile_px: int = 1024, margin_px: int = 64, z_min: float = 7.0, pixel_size_um: float | None = None, id_start: int = 0, progress: bool = True) -> list[dict]:
+def find_specks(source: ImageSource, tile_px: int = 1024, margin_px: int = 64, z_min: float = 10.0, pixel_size_um: float | None = None, id_start: int = 0, progress: bool = True) -> list[dict]:
     """Run the speck finder over a whole image; returns anomaly-style records (kind 'speck')."""
     import cv2
     from rich.progress import Progress

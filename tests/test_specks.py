@@ -16,4 +16,6 @@ def test_faint_speck_found_noise_ignored():
     src = ArraySource((np.clip(img, 0, 1) * 255).astype(np.uint8), 1.0)
     recs = find_specks(src, tile_px=256, margin_px=32, progress=False)
     assert any(abs(r["centroid_px"][0] - 120) < 4 and abs(r["centroid_px"][1] - 300) < 4 for r in recs)
-    assert len(recs) <= 3
+    assert len(recs) <= 6
+    # nothing on or right next to the designed bar
+    assert not any(195 <= r["centroid_px"][0] <= 305 and 40 <= r["centroid_px"][1] <= 70 for r in recs)

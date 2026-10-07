@@ -1,7 +1,7 @@
 /* chipscan viewer front end: OpenSeadragon canvas + defect list + keyboard review. */
 (() => {
-  const COLORS = { anomaly: "#ff6a00", speck: "#8fd3ff", short: "#ff4d4d", open: "#ff4dff", particle: "#ffa63d", protrusion: "#ffe14d", notch: "#4de3ff", void: "#4db8ff", missing_feature: "#c04dff", extra_feature: "#c04dff", unclassified: "#5ad17a" };
-  const SEV = { anomaly: 3, speck: 2, short: 5, open: 5, missing_feature: 4, extra_feature: 4, particle: 3, protrusion: 2, notch: 2, void: 1, unclassified: 0 };
+  const COLORS = { anomaly: "#ff6a00", speck: "#8fd3ff", die2die: "#ff3fb3", short: "#ff4d4d", open: "#ff4dff", particle: "#ffa63d", protrusion: "#ffe14d", notch: "#4de3ff", void: "#4db8ff", missing_feature: "#c04dff", extra_feature: "#c04dff", unclassified: "#5ad17a" };
+  const SEV = { anomaly: 3, speck: 2, die2die: 4, short: 5, open: 5, missing_feature: 4, extra_feature: 4, particle: 3, protrusion: 2, notch: 2, void: 1, unclassified: 0 };
   const CLASS_KEYS = { "1": "short", "2": "open", "3": "particle", "4": "protrusion", "5": "notch", "6": "void" };
 
   const $ = (id) => document.getElementById(id);
@@ -32,7 +32,7 @@
     $("sens").classList.toggle("hidden", !run.anomaly_run);
     if (run.anomaly_run && run.extract_params) {
       $("thr").value = run.extract_params.threshold; $("thr-val").textContent = (+run.extract_params.threshold).toFixed(2);
-      $("minpx").value = run.extract_params.min_area_px; $("specks").checked = run.extract_params.include_specks !== false;
+      $("minpx").value = run.extract_params.min_area_px; $("specks").checked = run.extract_params.include_specks !== false; $("die2die").checked = run.extract_params.include_die2die !== false;
     }
     buildViewer();
     refreshList();
@@ -222,7 +222,7 @@
   $("btn-apply").onclick = async () => {
     $("btn-apply").disabled = true; $("btn-apply").textContent = "working…";
     try {
-      const q = `threshold=${$("thr").value}&min_area_px=${$("minpx").value}&merge_px=8&include_specks=${$("specks").checked}`;
+      const q = `threshold=${$("thr").value}&min_area_px=${$("minpx").value}&merge_px=8&include_specks=${$("specks").checked}&include_die2die=${$("die2die").checked}`;
       const r = await api(`/api/runs/${run.name}/reextract?${q}`, { method: "POST" });
       defects = await api(`/api/runs/${run.name}/defects`); active = -1; refreshList(); refreshStats();
       $("btn-apply").textContent = `apply (${r.n})`;
