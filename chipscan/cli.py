@@ -7,6 +7,8 @@
     chipscan train    TRAIN.yaml
     chipscan synth    OUT_DIR  [--rotation 3.7 --scale 1.02 --flip]
     chipscan score    outputs/x.defects.json truth.json
+    chipscan train-anomaly TRAIN.yaml        (design-free)
+    chipscan detect   IMAGE --model anomaly.pt (design-free)
 """
 
 from __future__ import annotations
@@ -104,6 +106,82 @@ def train(config: Path):
     vs = InspectionTiles(val_scenes, tc.tile_px, max(tc.samples_per_epoch // 10, 32), tc.ignore_px, tc.use_prior, 0.0, False, inj, tc.seed + 1)
     _train(ds, tc.out, tc.epochs, tc.batch_size, tc.lr, tc.base_channels, tc.depth, tc.device, vs, tc.num_workers, tc.defect_pos_weight, tc.init_from)
     console.print(f"saved {tc.out} (+ .history.json)")
+
+
+@app.command(name="train-anomaly")
+def train_anomaly_cmd(config: Path):
+    """Train the design-free anomaly detector (image in, anomaly outline out) from a training YAML."""
+    from chipscan.config import AnomalyTrainConfig
+    from chipscan.geometry import BBox
+    from chipscan.io import open_source
+    from chipscan.segmentation.anomaly import AnomalyInjection, AnomalyTiles
+    from chipscan.segmentation.anomaly_train import train_anomaly
+
+    tc = AnomalyTrainConfig.load(config)
+
+    def scenes(lst):
+        srcs, regs = [], []
+        for sc in lst:
+            srcs.append(open_source(sc.path, sc.pixel_size_um, None, sc.channel))
+            regs.append(BBox(*sc.region_px) if sc.region_px else None)
+        return srcs, regs
+
+    tr_src, tr_reg = scenes(tc.scenes)
+    inj = AnomalyInjection(**tc.injection)
+    ds = AnomalyTiles(tr_src, tc.tile_px, tc.samples_per_epoch, inj, True, tc.seed, regions=tr_reg)
+    vs = None
+    if tc.val_scenes:
+        va_src, va_reg = scenes(tc.val_scenes)
+        vs = AnomalyTiles(va_src, tc.tile_px, tc.val_samples, inj, False, tc.seed + 1, regions=va_reg)
+    train_anomaly(ds, tc.out, tc.epochs, tc.batch_size, tc.lr, tc.base_channels, tc.depth, tc.device, vs, tc.num_workers, tc.pos_weight, tc.init_from)
+    console.print(f"saved {tc.out}")
+
+
+@app.command()
+def detect(
+    image: Path,
+    model: Path = typer.Option(..., help="Anomaly model .pt"),
+    out: Path = typer.Option(Path("outputs/anomaly"), help="Output directory"),
+    name: str | None = None,
+    pixel_size: float | None = typer.Option(None, help="Microns per pixel (for areas in um2)"),
+    threshold: float = 0.5,
+    min_area_px: int = 6,
+    tile: int = 512,
+    device: str = "auto",
+    suppress_repeats: bool = typer.Option(True, help="Drop candidates reproduced one repetition pitch away (designed structure)"),
+    match_ncc: float = typer.Option(0.8, help="NCC above which a candidate counts as repeated"),
+):
+    """Design-free anomaly detection on any image or pyramid: outlines, JSON/CSV, overlay. No GDS."""
+    import json
+
+    import zarr
+
+    from chipscan.io import open_source
+    from chipscan.segmentation.anomaly import (
+        AnomalyDetector,
+        anomalies_from_map,
+        write_anomaly_outputs,
+    )
+    from chipscan.segmentation.repeats import estimate_pitches
+    from chipscan.segmentation.repeats import suppress_repeats as _suppress
+
+    src = open_source(image, pixel_size)
+    name = name or image.stem.replace(".zarr", "")
+    out.mkdir(parents=True, exist_ok=True)
+    g = zarr.open_group(str(out / f"{name}.anomaly.zarr"), mode="w")
+    store = g.create_array("0", shape=src.shape, chunks=(1024, 1024), dtype="uint8")
+    det = AnomalyDetector(model, device)
+    det.run(src, tile_px=tile, store=store)
+    recs = anomalies_from_map(store, threshold, min_area_px, pixel_size or src.pixel_size_um)
+    n_raw = len(recs)
+    if suppress_repeats and recs:
+        pitches = estimate_pitches(src)
+        console.print(f"repetition pitches (px): x={[round(p) for p in pitches['x']]} y={[round(p) for p in pitches['y']]}")
+        recs, dropped = _suppress(src, recs, pitches, match_ncc=match_ncc)
+        (out / f"{name}.suppressed.json").write_text(json.dumps({"n": len(dropped), "defects": dropped}, indent=2))
+        console.print(f"{n_raw} candidates -> {len(recs)} after repeat suppression ({len(dropped)} reproduced one pitch away)")
+    written = write_anomaly_outputs(out, name, recs, src, store, pixel_size or src.pixel_size_um)
+    console.print(f"{len(recs)} anomalies; wrote " + ", ".join(f"{k}={v.name}" for k, v in written.items()))
 
 
 @app.command()

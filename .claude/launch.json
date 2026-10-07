@@ -4,7 +4,7 @@
     {
       "name": "viewer",
       "runtimeExecutable": "uv",
-      "runtimeArgs": ["run", "chipscan", "serve", "data/nft1_chip/config.yaml", "data/synthetic/config.yaml", "data/benchmark/case_102/config_unet.yaml", "--port", "8000"],
+      "runtimeArgs": ["run", "chipscan", "serve", "configs/aft5/AFT5_01_A2_pcm.yaml", "data/nft1_chip/config.yaml", "data/synthetic/config.yaml", "--port", "8000"],
       "port": 8000
     }
   ]

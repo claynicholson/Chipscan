@@ -1,0 +1,37 @@
+# Design-free anomaly detector.  Run:  uv run chipscan train-anomaly configs/train_anomaly.yaml
+#
+# Scenes are just images (pyramids or files); no GDS, no registration.  Mix as many different
+# products and microscopes as you have: variety is what makes the model generalise.
+scenes:
+  - path: ../data/pyramids/AFT5_01_A2.zarr          # real: superconducting TWPA reticle, Olympus DSX1000
+    pixel_size_um: 0.814
+  - path: ../data/pyramids/PCB_boards_batch1.zarr    # real: gold-plated PCB panel, same microscope
+  # - path: ../data/pyramids/AHQ1_B1_reticle.zarr    # real: a different qubit chip design (add when the drive is mounted)
+  #   pixel_size_um: 0.93
+  - path: ../data/nft1_chip/image.zarr               # synthetic render of the lab's own GDS chip
+    pixel_size_um: 0.93
+  - path: ../data/synthetic/image.png                # synthetic CPW resonator chip
+    pixel_size_um: 1.0
+
+val_scenes:
+  - path: ../data/pyramids/AFT5_07_C1.zarr           # held-out real reticle (never trained on)
+    pixel_size_um: 0.814
+
+out: ../models/anomaly_v2.pt
+epochs: 14
+samples_per_epoch: 2000
+val_samples: 240
+tile_px: 256
+batch_size: 16
+lr: 0.002
+base_channels: 24
+depth: 4
+device: auto
+pos_weight: 3.0
+seed: 0
+injection:
+  p_anomaly_tile: 0.8
+  max_per_tile: 3
+  min_size_px: 3.0
+  max_size_px: 40.0
+  p_types: {paste: 0.05, bar: 0.25, blob: 0.25, scratch: 0.12, shade: 0.1, blur: 0.05, erase: 0.18}

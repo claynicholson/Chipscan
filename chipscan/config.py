@@ -195,6 +195,53 @@ class TrainConfig(BaseModel):
         return cfg
 
 
+class AnomalySceneConfig(BaseModel):
+    path: Path
+    """Image or .zarr pyramid. No design needed."""
+    pixel_size_um: float | None = None
+    channel: Literal["gray", "r", "g", "b", "max", "min"] = "gray"
+    region_px: list[float] | None = None
+    """Optional [x0, y0, x1, y1] in px to restrict sampling (e.g. hold out a strip)."""
+
+
+class AnomalyTrainConfig(BaseModel):
+    """Design-free anomaly detector training: scenes are just images."""
+
+    scenes: list[AnomalySceneConfig]
+    val_scenes: list[AnomalySceneConfig] = Field(default_factory=list)
+    """Held-out scenes (ideally a different chip / microscope) for validation."""
+    out: Path = Path("models/anomaly.pt")
+    epochs: int = 12
+    samples_per_epoch: int = 2000
+    val_samples: int = 200
+    tile_px: int = 256
+    batch_size: int = 16
+    lr: float = 0.002
+    base_channels: int = 24
+    depth: int = 4
+    device: Literal["auto", "cpu", "mps", "cuda"] = "auto"
+    num_workers: int = 0
+    pos_weight: float = 3.0
+    init_from: Path | None = None
+    seed: int = 0
+    injection: dict = Field(default_factory=dict)
+    """Overrides for AnomalyInjection fields."""
+
+    @staticmethod
+    def load(path: str | Path) -> AnomalyTrainConfig:
+        p = Path(path)
+        cfg = AnomalyTrainConfig.model_validate(yaml.safe_load(p.read_text()) or {})
+        base = p.parent
+        for sc in cfg.scenes + cfg.val_scenes:
+            if not sc.path.is_absolute():
+                sc.path = (base / sc.path).resolve()
+        if not cfg.out.is_absolute():
+            cfg.out = (base / cfg.out).resolve()
+        if cfg.init_from is not None and not cfg.init_from.is_absolute():
+            cfg.init_from = (base / cfg.init_from).resolve()
+        return cfg
+
+
 class PipelineConfig(BaseModel):
     name: str = "inspection"
     image: ImageConfig
