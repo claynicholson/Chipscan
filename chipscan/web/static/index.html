@@ -22,6 +22,7 @@
     <label class="toggle"><input type="checkbox" id="specks" checked> faint specks</label>
     <label class="toggle"><input type="checkbox" id="die2die" checked> die-to-die</label>
     <button id="btn-apply">apply</button>
+    <button id="btn-learn" title="Train a classifier on your real/false-alarm reviews and rank all candidates">learn from reviews</button>
   </span>
   <button id="btn-measure" title="Draw a line to measure metal/gap widths (m)">measure</button>
   <button id="btn-positions" title="PRECiV position list of selected defects">re-image selected</button>
@@ -38,13 +39,15 @@
         <option value="area">sort: area</option>
         <option value="score">sort: score</option>
         <option value="id">sort: id</option>
+        <option value="p_real">sort: learned confidence</option>
+        <option value="uncertain">sort: most uncertain first</option>
       </select>
     </div>
     <div id="stats" class="stats"></div>
     <div id="list" class="list"></div>
     <div class="help">
       <b>keys</b> ↑/↓ or j/k next · <b>r</b> real · <b>f</b> false alarm · <b>u</b> unsure · <b>x</b> select for re-image ·
-      <b>1</b> short <b>2</b> open <b>3</b> particle <b>4</b> protrusion <b>5</b> notch <b>6</b> void · <b>m</b> measure · <b>esc</b> cancel
+      <b>1</b> short <b>2</b> open <b>3</b> particle <b>4</b> protrusion <b>5</b> notch <b>6</b> void · <b>m</b> measure · <b>esc</b> cancel · filter <b>p&gt;0.5</b> after learning
     </div>
   </aside>
   <section id="viewer-wrap">

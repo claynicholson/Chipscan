@@ -152,6 +152,8 @@
       if (t.startsWith(">")) return d.area_um2 > parseFloat(t.slice(1));
       if (t.startsWith("<")) return d.area_um2 < parseFloat(t.slice(1));
       if (t.startsWith("#")) return String(d.id) === t.slice(1);
+      if (t.startsWith("p>")) return d.p_real != null && d.p_real > parseFloat(t.slice(2));
+      if (t.startsWith("p<")) return d.p_real != null && d.p_real < parseFloat(t.slice(2));
       return d.class.includes(t) || d.kind.includes(t) || d.review.status.includes(t) || (t === "selected" && selected.has(d.id));
     });
   }
@@ -159,13 +161,14 @@
   function refreshList() {
     const f = parseFilter($("q").value), sort = $("sort").value;
     view = defects.filter(f);
-    const key = { severity: d => -(SEV[d.class] || 0) * 1e6 - d.area_um2, area: d => -d.area_um2, score: d => -d.score, id: d => d.id }[sort];
+    const key = { severity: d => -(SEV[d.class] || 0) * 1e6 - d.area_um2, area: d => -d.area_um2, score: d => -d.score, id: d => d.id,
+      p_real: d => -(d.p_real == null ? -1 : d.p_real), uncertain: d => (d.review.status !== "unreviewed" ? 1 : 0) + Math.abs((d.p_real == null ? 0.5 : d.p_real) - 0.5) }[sort];
     view.sort((a, b) => key(a) - key(b));
     $("list").innerHTML = view.map((d, i) => `
       <div class="row ${i === active ? "active" : ""}" data-i="${i}">
         <img loading="lazy" src="/api/runs/${run.name}/thumb/${d.id}.jpg" alt="">
         <div><div class="title cls-${d.class}">${d.class} <span class="muted">#${d.id}</span>${selected.has(d.id) ? '<span class="sel">●</span>' : ""}</div>
-          <div class="sub">${d.kind.replace("_metal", "")} · ${d.area_um2.toFixed(1)} µm² · score ${d.score.toFixed(2)}${d.repeat_ncc != null ? ` · twin ${d.repeat_ncc.toFixed(2)}` : ""}${d.review.cls && d.review.cls !== d.class ? ` · reviewed as <b>${d.review.cls}</b>` : ""}</div></div>
+          <div class="sub">${d.kind.replace("_metal", "")} · ${d.area_um2.toFixed(1)} µm² · score ${d.score.toFixed(2)}${d.repeat_ncc != null ? ` · twin ${d.repeat_ncc.toFixed(2)}` : ""}${d.p_real != null ? ` · <b>p ${d.p_real.toFixed(2)}</b>` : ""}${d.review.cls && d.review.cls !== d.class ? ` · reviewed as <b>${d.review.cls}</b>` : ""}</div></div>
         <span class="badge ${d.review.status}">${d.review.status.replace("_", " ")}</span>
       </div>`).join("");
     $("list").querySelectorAll(".row").forEach(el => el.onclick = () => setActive(+el.dataset.i, true));
@@ -219,6 +222,15 @@
   function toggleMeasure() { measuring = !measuring; measurePts = []; $("btn-measure").classList.toggle("active", measuring); if (!measuring) $("measure-out").classList.add("hidden"); safeDraw(); }
   $("btn-measure").onclick = toggleMeasure;
   $("thr").oninput = e => { $("thr-val").textContent = (+e.target.value).toFixed(2); };
+  $("btn-learn").onclick = async () => {
+    $("btn-learn").disabled = true; $("btn-learn").textContent = "training…";
+    try {
+      const r = await api(`/api/runs/${run.name}/learn`, { method: "POST" });
+      defects = await api(`/api/runs/${run.name}/defects`); $("sort").value = "p_real"; active = -1; refreshList(); refreshStats();
+      const m = r.metrics; $("btn-learn").textContent = `learned (${m.n_pos}✓ ${m.n_neg}✗${m.val_acc != null ? `, val acc ${(100 * m.val_acc).toFixed(0)}%` : ""})`;
+    } catch (e) { alert(e); $("btn-learn").textContent = "learn from reviews"; }
+    $("btn-learn").disabled = false;
+  };
   $("btn-apply").onclick = async () => {
     $("btn-apply").disabled = true; $("btn-apply").textContent = "working…";
     try {

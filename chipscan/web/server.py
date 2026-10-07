@@ -96,7 +96,8 @@ class Run:
         """Append the classical finds (faint specks, die-to-die) that the learned records do not already cover."""
         inc_sp = self.extract_params.get("include_specks", True)
         inc_dd = self.extract_params.get("include_die2die", True)
-        extra = [d for d in self.specks if (d["kind"] == "speck" and inc_sp) or (d["kind"] == "die2die" and inc_dd)]
+        min_px = self.extract_params.get("min_area_px", 0)
+        extra = [d for d in self.specks if ((d["kind"] == "speck" and inc_sp) or (d["kind"] == "die2die" and inc_dd)) and d.get("area_px", 0) >= min_px]
         if not extra:
             return recs
         out = list(recs)
@@ -267,6 +268,17 @@ class Run:
         return {"length_um": float(np.linalg.norm(p1 - p0)), "runs": [{"phase": a, "length_um": round(b, 3)} for a, b in runs], "edges_um": [round(e, 3) for e in edges]}
 
 
+def _centroid_px(d: dict) -> tuple[float, float] | None:
+    """Centroid in level-0 px for any record kind (design-based records carry only bbox_px)."""
+    c = d.get("centroid_px")
+    if c is not None:
+        return float(c[0]), float(c[1])
+    b = d.get("bbox_px")
+    if b:
+        return 0.5 * (b["x0"] + b["x1"]), 0.5 * (b["y0"] + b["y1"])
+    return None
+
+
 # ---------------------------------------------------------------------------
 class ReviewDB:
     def __init__(self, path: Path):
@@ -276,22 +288,46 @@ class ReviewDB:
             c.execute(
                 "CREATE TABLE IF NOT EXISTS review (run TEXT, defect_id INTEGER, status TEXT, cls TEXT, note TEXT, reviewer TEXT, ts REAL, PRIMARY KEY (run, defect_id))"
             )
+            cols = [r[1] for r in c.execute("PRAGMA table_info(review)").fetchall()]
+            if "cx" not in cols:
+                c.execute("ALTER TABLE review ADD COLUMN cx REAL")
+                c.execute("ALTER TABLE review ADD COLUMN cy REAL")
+            c.execute("CREATE TABLE IF NOT EXISTS review_pos (run TEXT, cx REAL, cy REAL, status TEXT, cls TEXT, note TEXT, reviewer TEXT, ts REAL, PRIMARY KEY (run, cx, cy))")
 
     def _conn(self):
         return sqlite3.connect(str(self.path))
 
-    def get(self, run: str) -> dict[int, dict]:
+    def positions(self, run: str) -> list[dict]:
+        """All position-keyed reviews for a run."""
         with self.lock, self._conn() as c:
-            rows = c.execute("SELECT defect_id, status, cls, note, reviewer, ts FROM review WHERE run=?", (run,)).fetchall()
-        return {r[0]: {"status": r[1], "cls": r[2], "note": r[3], "reviewer": r[4], "ts": r[5]} for r in rows}
+            rows = c.execute("SELECT cx, cy, status, cls, note, reviewer, ts FROM review_pos WHERE run=?", (run,)).fetchall()
+        return [{"cx": r[0], "cy": r[1], "status": r[2], "cls": r[3], "note": r[4], "reviewer": r[5], "ts": r[6]} for r in rows]
 
-    def set(self, run: str, defect_id: int, status: str, cls: str | None, note: str | None, reviewer: str | None) -> None:
+    def get(self, run: str, defects: list[dict] | None = None, radius_px: float = 12.0) -> dict[int, dict]:
+        """Reviews keyed by current defect id: matched by position so they survive re-extraction."""
+        pos = self.positions(run)
+        if defects is None or not pos:
+            return {}
+        pxy = np.array([[p["cx"], p["cy"]] for p in pos])
+        out: dict[int, dict] = {}
+        for d in defects:
+            c = _centroid_px(d)
+            if c is None:
+                continue
+            dist = np.hypot(pxy[:, 0] - c[0], pxy[:, 1] - c[1])
+            k = int(np.argmin(dist))
+            if dist[k] <= radius_px:
+                p = pos[k]
+                out[d["id"]] = {"status": p["status"], "cls": p["cls"], "note": p["note"], "reviewer": p["reviewer"], "ts": p["ts"]}
+        return out
+
+    def set(self, run: str, cx: float, cy: float, status: str, cls: str | None, note: str | None, reviewer: str | None, radius_px: float = 12.0) -> None:
         with self.lock, self._conn() as c:
-            c.execute(
-                "INSERT INTO review (run, defect_id, status, cls, note, reviewer, ts) VALUES (?,?,?,?,?,?,?) "
-                "ON CONFLICT(run, defect_id) DO UPDATE SET status=excluded.status, cls=excluded.cls, note=excluded.note, reviewer=excluded.reviewer, ts=excluded.ts",
-                (run, defect_id, status, cls, note, reviewer, time.time()),
-            )
+            # replace an existing review at (about) the same position
+            rows = c.execute("SELECT cx, cy FROM review_pos WHERE run=? AND cx BETWEEN ? AND ? AND cy BETWEEN ? AND ?", (run, cx - radius_px, cx + radius_px, cy - radius_px, cy + radius_px)).fetchall()
+            for ox, oy in rows:
+                c.execute("DELETE FROM review_pos WHERE run=? AND cx=? AND cy=?", (run, ox, oy))
+            c.execute("INSERT INTO review_pos (run, cx, cy, status, cls, note, reviewer, ts) VALUES (?,?,?,?,?,?,?,?)", (run, float(cx), float(cy), status, cls, note, reviewer, time.time()))
 
 
 class ReviewIn(BaseModel):
@@ -329,7 +365,7 @@ def create_app(config_paths: list[Path], db_path: Path | None = None) -> FastAPI
         out = []
         for r in runs.values():
             h, w = r.source.shape
-            rv = db.get(r.name)
+            rv = db.get(r.name, r.defects)
             out.append(
                 {
                     "name": r.name,
@@ -355,22 +391,45 @@ def create_app(config_paths: list[Path], db_path: Path | None = None) -> FastAPI
     @app.get("/api/runs/{name}/defects")
     def defects(name: str):
         r = get_run(name)
-        rv = db.get(name)
+        rv = db.get(name, r.defects)
         out = []
         for d in r.defects:
-            rec = {k: d.get(k) for k in ("id", "kind", "class", "bbox_px", "bbox_um", "centroid_um", "area_um2", "area_px", "score", "polygons_px")}
+            rec = {k: d.get(k) for k in ("id", "kind", "class", "bbox_px", "bbox_um", "centroid_um", "centroid_px", "area_um2", "area_px", "score", "polygons_px")}
             rec["repeat_ncc"] = d.get("repeat_ncc")
+            rec["p_real"] = d.get("p_real")
             rec["review"] = rv.get(d["id"], {"status": "unreviewed", "cls": None, "note": None})
             out.append(rec)
         return out
 
     @app.post("/api/runs/{name}/review")
     def review(name: str, body: ReviewIn):
-        get_run(name)
+        r = get_run(name)
         if body.status not in ("real", "false_alarm", "unsure", "unreviewed"):
             raise HTTPException(400, "bad status")
-        db.set(name, body.defect_id, body.status, body.cls, body.note, body.reviewer)
+        d = next((d for d in r.defects if d["id"] == body.defect_id), None)
+        if d is None:
+            raise HTTPException(404, "unknown defect")
+        cx, cy = _centroid_px(d)
+        db.set(name, cx, cy, body.status, body.cls, body.note, body.reviewer)
         return {"ok": True}
+
+    @app.post("/api/runs/{name}/learn")
+    def learn(name: str, epochs: int = 40):
+        """Train the reviewer classifier from this run's reviews and score every candidate (p_real)."""
+        from chipscan.segmentation.reviewer import save_reviewer, score_candidates, train_reviewer
+
+        r = get_run(name)
+        pos = db.positions(name)
+        lab = [(p["cx"], p["cy"], 1) for p in pos if p["status"] == "real"] + [(p["cx"], p["cy"], 0) for p in pos if p["status"] == "false_alarm"]
+        n_pos, n_neg = sum(1 for x in lab if x[2] == 1), sum(1 for x in lab if x[2] == 0)
+        if n_pos < 5 or n_neg < 5:
+            raise HTTPException(400, f"need at least 5 real and 5 false-alarm reviews (have {n_pos} / {n_neg})")
+        model, metrics = train_reviewer(r.source, lab, epochs=epochs)
+        p = score_candidates(model, r.source, r.defects)
+        for d, v in zip(r.defects, p, strict=True):
+            d["p_real"] = float(v)
+        save_reviewer(model, r.out_dir / f"{r.name}.reviewer.pt", metrics)
+        return {"ok": True, "metrics": metrics, "n_scored": len(r.defects)}
 
     @app.get("/api/runs/{name}/tiles/{level}/{x}/{y}.jpg")
     def tile(name: str, level: int, x: int, y: int):
@@ -417,7 +476,7 @@ def create_app(config_paths: list[Path], db_path: Path | None = None) -> FastAPI
     @app.get("/api/runs/{name}/export.csv")
     def export_csv(name: str):
         r = get_run(name)
-        rv = db.get(name)
+        rv = db.get(name, r.defects)
         lines = ["id,kind,class,area_um2,score,x_um,y_um,review_status,review_class,note"]
         for d in r.defects:
             v = rv.get(d["id"], {})
@@ -435,7 +494,7 @@ def create_app(config_paths: list[Path], db_path: Path | None = None) -> FastAPI
     @app.get("/api/runs/{name}/stats")
     def stats(name: str):
         r = get_run(name)
-        rv = db.get(name)
+        rv = db.get(name, r.defects)
         by_cls: dict[str, dict[str, int]] = {}
         for d in r.defects:
             c = by_cls.setdefault(d["class"], {"n": 0, "real": 0, "false_alarm": 0, "unsure": 0})
