@@ -159,7 +159,7 @@ def gallery(
 
         lib = gdstk.read_gds(str(gds_path))
         cell = lib.top_level()[0]
-        labels = {(round(l.origin[0], 3), round(l.origin[1], 3)): int(l.text.split("#")[-1]) for l in cell.labels}
+        labels = {(round(lab.origin[0], 3), round(lab.origin[1], 3)): int(lab.text.split("#")[-1]) for lab in cell.labels}
         for p in cell.polygons:
             # polygons are not tagged with ids in GDS; attach by nearest label centroid
             c = np.asarray(p.points).mean(axis=0)
