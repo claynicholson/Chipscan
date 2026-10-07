@@ -16,6 +16,12 @@
   <label class="toggle"><input type="checkbox" id="layer-design" checked> design edges</label>
   <label class="toggle"><input type="checkbox" id="layer-pred"> prediction heatmap</label>
   <label class="toggle"><input type="checkbox" id="layer-defects" checked> defect outlines</label>
+  <span id="sens" class="sens hidden">
+    <label title="Anomaly probability threshold: lower = more sensitive">thr <input type="range" id="thr" min="0.05" max="0.95" step="0.05" value="0.5"><span id="thr-val">0.50</span></label>
+    <label title="Minimum anomaly size in pixels">min px <input type="number" id="minpx" min="1" max="500" value="6" style="width:56px"></label>
+    <label class="toggle"><input type="checkbox" id="specks" checked> faint specks</label>
+    <button id="btn-apply">apply</button>
+  </span>
   <button id="btn-measure" title="Draw a line to measure metal/gap widths (m)">measure</button>
   <button id="btn-positions" title="PRECiV position list of selected defects">re-image selected</button>
   <a id="btn-export" href="#" download>export CSV</a>

@@ -43,3 +43,8 @@ aside { display: flex; flex-direction: column; border-right: 1px solid var(--lin
 .measure-out { position: absolute; right: 10px; bottom: 10px; background: rgba(15,18,22,.92); border: 1px solid var(--accent); border-radius: 6px; padding: 8px 10px; font-family: ui-monospace, Menlo, monospace; font-size: 12px; max-width: 360px; }
 .hidden { display: none; }
 @media (max-width: 900px) { main { grid-template-columns: 1fr; grid-template-rows: 40% 60%; } aside { border-right: 0; border-bottom: 1px solid var(--line); } }
+
+.sens { display: flex; gap: 10px; align-items: center; padding: 2px 8px; border: 1px solid var(--line); border-radius: 6px; color: var(--muted); }
+.sens input[type=range] { width: 90px; vertical-align: middle; }
+.sens label { display: flex; gap: 4px; align-items: center; }
+.cls-speck { color: #8fd3ff; }

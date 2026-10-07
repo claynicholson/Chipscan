@@ -1,7 +1,7 @@
 /* chipscan viewer front end: OpenSeadragon canvas + defect list + keyboard review. */
 (() => {
-  const COLORS = { anomaly: "#ff6a00", short: "#ff4d4d", open: "#ff4dff", particle: "#ffa63d", protrusion: "#ffe14d", notch: "#4de3ff", void: "#4db8ff", missing_feature: "#c04dff", extra_feature: "#c04dff", unclassified: "#5ad17a" };
-  const SEV = { anomaly: 3, short: 5, open: 5, missing_feature: 4, extra_feature: 4, particle: 3, protrusion: 2, notch: 2, void: 1, unclassified: 0 };
+  const COLORS = { anomaly: "#ff6a00", speck: "#8fd3ff", short: "#ff4d4d", open: "#ff4dff", particle: "#ffa63d", protrusion: "#ffe14d", notch: "#4de3ff", void: "#4db8ff", missing_feature: "#c04dff", extra_feature: "#c04dff", unclassified: "#5ad17a" };
+  const SEV = { anomaly: 3, speck: 2, short: 5, open: 5, missing_feature: 4, extra_feature: 4, particle: 3, protrusion: 2, notch: 2, void: 1, unclassified: 0 };
   const CLASS_KEYS = { "1": "short", "2": "open", "3": "particle", "4": "protrusion", "5": "notch", "6": "void" };
 
   const $ = (id) => document.getElementById(id);
@@ -29,6 +29,11 @@
     $("btn-export").href = `/api/runs/${name}/export.csv`;
     defects = await api(`/api/runs/${name}/defects`);
     selected.clear(); active = -1;
+    $("sens").classList.toggle("hidden", !run.anomaly_run);
+    if (run.anomaly_run && run.extract_params) {
+      $("thr").value = run.extract_params.threshold; $("thr-val").textContent = (+run.extract_params.threshold).toFixed(2);
+      $("minpx").value = run.extract_params.min_area_px; $("specks").checked = run.extract_params.include_specks !== false;
+    }
     buildViewer();
     refreshList();
     refreshStats();
@@ -213,6 +218,17 @@
   });
   function toggleMeasure() { measuring = !measuring; measurePts = []; $("btn-measure").classList.toggle("active", measuring); if (!measuring) $("measure-out").classList.add("hidden"); safeDraw(); }
   $("btn-measure").onclick = toggleMeasure;
+  $("thr").oninput = e => { $("thr-val").textContent = (+e.target.value).toFixed(2); };
+  $("btn-apply").onclick = async () => {
+    $("btn-apply").disabled = true; $("btn-apply").textContent = "working…";
+    try {
+      const q = `threshold=${$("thr").value}&min_area_px=${$("minpx").value}&merge_px=8&include_specks=${$("specks").checked}`;
+      const r = await api(`/api/runs/${run.name}/reextract?${q}`, { method: "POST" });
+      defects = await api(`/api/runs/${run.name}/defects`); active = -1; refreshList(); refreshStats();
+      $("btn-apply").textContent = `apply (${r.n})`;
+    } catch (e) { alert(e); $("btn-apply").textContent = "apply"; }
+    $("btn-apply").disabled = false;
+  };
   $("btn-positions").onclick = () => { const ids = [...selected].join(","); if (!ids) { alert("select defects with x first"); return; } location.href = `/api/runs/${run.name}/positions.xml?ids=${ids}`; };
   $("layer-design").onchange = e => { if (layers.design) layers.design.setOpacity(e.target.checked ? 1 : 0); };
   $("layer-pred").onchange = e => { if (layers.pred) layers.pred.setOpacity(e.target.checked ? 1 : 0); };

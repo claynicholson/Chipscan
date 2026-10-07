@@ -151,6 +151,8 @@ def detect(
     device: str = "auto",
     suppress_repeats: bool = typer.Option(True, help="Drop candidates reproduced one repetition pitch away (designed structure)"),
     match_ncc: float = typer.Option(0.8, help="NCC above which a candidate counts as repeated"),
+    specks: bool = typer.Option(True, help="Also run the classical faint-speck finder (dust/haze a few grey levels above noise)"),
+    speck_z: float = typer.Option(7.0, help="Speck significance threshold in noise sigmas"),
 ):
     """Design-free anomaly detection on any image or pyramid: outlines, JSON/CSV, overlay. No GDS."""
     import json
@@ -174,6 +176,18 @@ def detect(
     det = AnomalyDetector(model, device)
     det.run(src, tile_px=tile, store=store)
     recs = anomalies_from_map(store, threshold, min_area_px, pixel_size or src.pixel_size_um, merge_px=merge_px)
+    if specks:
+        from chipscan.segmentation.specks import find_specks
+
+        sp = find_specks(src, z_min=speck_z, pixel_size_um=pixel_size or src.pixel_size_um, id_start=len(recs))
+        # drop specks already covered by a learned anomaly
+        import numpy as _np
+
+        if recs:
+            cxy = _np.array([r["centroid_px"] for r in recs])
+            sp = [r for r in sp if _np.hypot(*(cxy - r["centroid_px"]).T).min() > 12]
+        console.print(f"faint-speck finder: {len(sp)} specks (z > {speck_z})")
+        recs += sp
     n_raw = len(recs)
     if suppress_repeats and recs:
         pitches = estimate_pitches(src)

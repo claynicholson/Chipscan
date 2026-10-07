@@ -75,7 +75,50 @@ class Run:
         cfg = None
         run = Run(name, cfg, src, None, WarpField(Affine2D.scaling(1.0 / px)), px, defects, amap, out, out / f"{name}.tiles")
         run.cache_dir.mkdir(parents=True, exist_ok=True)
+        run.anomaly_run = True
+        sp = out / f"{name}.specks.json"
+        run.specks = json.loads(sp.read_text())["defects"] if sp.exists() else []
+        for d in run.specks:
+            d.setdefault("polygons_px", [])
+            d.setdefault("bbox_um", {k: v * px for k, v in d["bbox_px"].items()})
+        run.extract_params = {"threshold": rec.get("summary", {}).get("threshold", 0.5), "min_area_px": 6, "merge_px": 8, "include_specks": True}
+        run.defects = run._with_specks(defects)
         return run
+
+    anomaly_run: bool = False
+    specks: list[dict] = field(default_factory=list)
+    extract_params: dict = field(default_factory=dict)
+
+    def _with_specks(self, recs: list[dict]) -> list[dict]:
+        if not self.specks or not self.extract_params.get("include_specks", True):
+            return recs
+        out = list(recs)
+        if recs:
+            cxy = np.array([r["centroid_px"] for r in recs])
+            sp = [d for d in self.specks if np.hypot(*(cxy - d["centroid_px"]).T).min() > 12]
+        else:
+            sp = list(self.specks)
+        nid = (max(r["id"] for r in recs) + 1) if recs else 0
+        for d in sp:
+            d = dict(d)
+            d["id"] = nid
+            nid += 1
+            out.append(d)
+        return out
+
+    def reextract(self, threshold: float, min_area_px: int, merge_px: int, include_specks: bool) -> int:
+        """Recompute anomaly records from the stored probability map (no model run needed)."""
+        from chipscan.segmentation.anomaly import anomalies_from_map
+
+        if self.pred is None:
+            raise HTTPException(400, "no anomaly map stored for this run")
+        with self.lock:
+            recs = anomalies_from_map(self.pred, threshold, min_area_px, self.pixel_size_um, merge_px=merge_px)
+            for d in recs:
+                d.setdefault("polygons_px", [])
+            self.extract_params = {"threshold": threshold, "min_area_px": min_area_px, "merge_px": merge_px, "include_specks": include_specks}
+            self.defects = self._with_specks(recs)
+        return len(self.defects)
 
     @staticmethod
     def load(config_path: Path) -> Run:
@@ -293,6 +336,9 @@ def create_app(config_paths: list[Path], db_path: Path | None = None) -> FastAPI
                     "design": str(r.cfg.design.path.name) if r.cfg else "none (design-free)",
                     "segmenter": r.cfg.segmentation.method if r.cfg else "anomaly",
                     "registration": r.warp.affine.to_dict(),
+                    "anomaly_run": r.anomaly_run,
+                    "extract_params": r.extract_params,
+                    "n_specks": len(r.specks),
                     "fine_rms_px": (r.reg_info.get("fine") or {}).get("rms_residual_px"),
                     "coarse_score": (r.reg_info.get("coarse") or {}).get("score"),
                 }
@@ -370,6 +416,14 @@ def create_app(config_paths: list[Path], db_path: Path | None = None) -> FastAPI
             v = rv.get(d["id"], {})
             lines.append(f"{d['id']},{d['kind']},{d['class']},{d['area_um2']:.3f},{d['score']:.3f},{d['centroid_um'][0]:.3f},{d['centroid_um'][1]:.3f},{v.get('status', 'unreviewed')},{v.get('cls') or ''},{(v.get('note') or '').replace(',', ';')}")
         return Response("\n".join(lines) + "\n", media_type="text/csv", headers={"Content-Disposition": f"attachment; filename={name}.reviewed.csv"})
+
+    @app.post("/api/runs/{name}/reextract")
+    def reextract(name: str, threshold: float = 0.5, min_area_px: int = 6, merge_px: int = 8, include_specks: bool = True):
+        r = get_run(name)
+        if not r.anomaly_run:
+            raise HTTPException(400, "re-extraction applies to design-free anomaly runs")
+        n = r.reextract(threshold, min_area_px, merge_px, include_specks)
+        return {"ok": True, "n": n, "params": r.extract_params}
 
     @app.get("/api/runs/{name}/stats")
     def stats(name: str):
