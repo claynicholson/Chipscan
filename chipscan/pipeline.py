@@ -19,7 +19,14 @@ from rich.progress import Progress
 
 from chipscan.config import PipelineConfig
 from chipscan.design import Design
-from chipscan.detection import Defect, RuleClassifier, compare_tile, measure_cut, merge_defects
+from chipscan.detection import (
+    Defect,
+    RuleClassifier,
+    compare_tile,
+    defects_from_masks,
+    measure_cut,
+    merge_defects,
+)
 from chipscan.detection.metrology import CutResult
 from chipscan.export import write_csv, write_defects_gds, write_json, write_overlay, write_rdb
 from chipscan.geometry import BBox, WarpField
@@ -115,9 +122,21 @@ def segment_and_compare(
             if pred_store is not None:
                 cx0, cy0, cx1, cy1 = t.core.to_int()
                 pred_store[cy0:cy1, cx0:cx1] = np.rint(prob_c * 255).astype(np.uint8)
-            defects.extend(
-                compare_tile(prob_c, design_c, (t.core.x0, t.core.y0), warp, pixel_size_um, cfg.detection, t.index, classifier, len(defects), cfg.segmentation.threshold)
-            )
+            origin = (t.core.x0, t.core.y0)
+            if getattr(seg, "predicts_defects", False):
+                # learned detector: use its defect channels directly (no tolerance band)
+                p_extra, p_missing = seg.predict_defects(img[None], prior[None])
+                thr = cfg.segmentation.threshold
+                extra = np.ascontiguousarray(p_extra[0][sl]) > thr
+                missing = np.ascontiguousarray(p_missing[0][sl]) > thr
+                score_map = np.maximum(np.ascontiguousarray(p_extra[0][sl]), np.ascontiguousarray(p_missing[0][sl]))
+                defects.extend(
+                    defects_from_masks(extra, missing, score_map, design_c, prob_c > thr, origin, warp, pixel_size_um, cfg.detection, t.index, classifier, len(defects))
+                )
+            else:
+                defects.extend(
+                    compare_tile(prob_c, design_c, origin, warp, pixel_size_um, cfg.detection, t.index, classifier, len(defects), cfg.segmentation.threshold)
+                )
             prog.advance(task)
     merged = merge_defects(defects, cfg.detection.merge_margin_um)
     console.print(f"{len(defects)} raw blobs -> {len(merged)} defects")
@@ -186,6 +205,15 @@ def export(res: InspectionResult) -> dict[str, Path]:
         write_overlay(p, res.source, res.defects, res.warp, cfg.export.overlay_max_px, de)
         written["overlay"] = p
     return written
+
+
+def load_scene(cfg: PipelineConfig, name: str | None = None):
+    """Register (or load the saved registration for) a pipeline config and return a training Scene."""
+    from chipscan.segmentation.dataset import Scene
+
+    src, des = load_inputs(cfg)
+    warp, px, _ = register(cfg, src, des)
+    return Scene(src, des, warp, px, name or cfg.name)
 
 
 def run_inspection(cfg: PipelineConfig, segmenter: Segmenter | None = None, classifier=None) -> InspectionResult:

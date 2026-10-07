@@ -141,6 +141,54 @@ class ExportConfig(BaseModel):
     save_pred_mask: bool = True
 
 
+class InjectionParams(BaseModel):
+    enabled: bool = True
+    p_defect_tile: float = 0.85
+    max_per_tile: int = 4
+    min_radius_px: float = 1.5
+    max_radius_px: float = 12.0
+    p_bar: float = 0.35
+    edge_softness_px: float = 0.7
+    texture_noise: float = 1.0
+
+
+class TrainConfig(BaseModel):
+    """Training run: one or more registered scenes (each a pipeline YAML) + hyper-parameters."""
+
+    scenes: list[Path]
+    """Pipeline configs; each is registered (or its saved transform loaded) and becomes a scene."""
+    out: Path = Path("models/unet.pt")
+    epochs: int = 10
+    samples_per_epoch: int = 2000
+    tile_px: int = 256
+    batch_size: int = 8
+    lr: float = 1e-3
+    base_channels: int = 24
+    depth: int = 4
+    use_prior: bool = True
+    prior_jitter_px: float = 1.0
+    ignore_px: int = 1
+    val_frac: float = 0.1
+    device: Literal["auto", "cpu", "mps", "cuda"] = "auto"
+    num_workers: int = 0
+    defect_pos_weight: float = 4.0
+    init_from: Path | None = None
+    seed: int = 0
+    injection: InjectionParams = InjectionParams()
+
+    @staticmethod
+    def load(path: str | Path) -> TrainConfig:
+        p = Path(path)
+        cfg = TrainConfig.model_validate(yaml.safe_load(p.read_text()) or {})
+        base = p.parent
+        cfg.scenes = [(base / s).resolve() if not Path(s).is_absolute() else Path(s) for s in cfg.scenes]
+        if not cfg.out.is_absolute():
+            cfg.out = (base / cfg.out).resolve()
+        if cfg.init_from is not None and not cfg.init_from.is_absolute():
+            cfg.init_from = (base / cfg.init_from).resolve()
+        return cfg
+
+
 class PipelineConfig(BaseModel):
     name: str = "inspection"
     image: ImageConfig

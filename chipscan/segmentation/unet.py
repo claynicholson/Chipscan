@@ -1,10 +1,12 @@
-"""A compact UNet for image -> metal-mask segmentation.
+"""A compact UNet for inspection.
 
-Input channels: 1 (image) or 2 (image + rendered design prior).  Feeding the
-design prior is optional; without it the network must *see* the metal, with it
-the network learns "what the design says should be here, modulated by what is
-actually here", which is closer to die-to-database inspection.  Both modes are
-supported by the same class so they can be compared in the paper.
+Inputs : 1 channel (image) or 2 channels (image + rendered design prior).
+Outputs: 1 channel  -> metal probability (plain segmenter), or
+         3 channels -> [metal, extra_metal_defect, missing_metal_defect].
+
+With 3 outputs the network is a *detector*: the defect channels are trained on
+design-aware injected defects (see dataset.py) and are used directly by the
+pipeline instead of the tolerance-band XOR.
 """
 
 from __future__ import annotations
@@ -44,9 +46,9 @@ class _Block(nn.Module):
 
 
 class UNet(nn.Module):
-    def __init__(self, in_channels: int = 1, base: int = 24, depth: int = 4):
+    def __init__(self, in_channels: int = 2, base: int = 24, depth: int = 4, out_channels: int = 3):
         super().__init__()
-        self.in_channels, self.base, self.depth = in_channels, base, depth
+        self.in_channels, self.base, self.depth, self.out_channels = in_channels, base, depth, out_channels
         chs = [base * (2**i) for i in range(depth + 1)]
         self.enc = nn.ModuleList()
         c = in_channels
@@ -61,7 +63,7 @@ class UNet(nn.Module):
             self.up.append(nn.ConvTranspose2d(c, ch, 2, stride=2))
             self.dec.append(_Block(ch * 2, ch))
             c = ch
-        self.head = nn.Conv2d(c, 1, 1)
+        self.head = nn.Conv2d(c, out_channels, 1)
 
     def forward(self, x):
         skips = []
@@ -84,6 +86,7 @@ class UNet(nn.Module):
                 "in_channels": self.in_channels,
                 "base": self.base,
                 "depth": self.depth,
+                "out_channels": self.out_channels,
                 **(extra or {}),
             },
             str(path),
@@ -92,22 +95,30 @@ class UNet(nn.Module):
     @staticmethod
     def load(path: str | Path, device: torch.device | None = None) -> UNet:
         ck = torch.load(str(path), map_location=device or "cpu", weights_only=False)
-        m = UNet(ck["in_channels"], ck["base"], ck["depth"])
+        m = UNet(ck["in_channels"], ck["base"], ck["depth"], ck.get("out_channels", 1))
         m.load_state_dict(ck["state_dict"])
         return m
 
 
 class UNetSegmenter:
+    """Pipeline adapter. `predict` gives metal probability; with a 3-channel model
+    `predict_defects` gives (extra, missing) probabilities and `predicts_defects` is True."""
+
     def __init__(self, model_path: str | Path, device: str = "auto", batch_size: int = 4):
         self.device = pick_device(device)
         self.model = UNet.load(model_path, self.device).to(self.device).eval()
         self.uses_design_prior = self.model.in_channels == 2
+        self.predicts_defects = self.model.out_channels >= 3
         self.name = f"unet:{Path(model_path).name}"
         self.batch_size = batch_size
+        self._cache: tuple[int, np.ndarray] | None = None
 
     @torch.no_grad()
-    def predict(self, tiles: np.ndarray, priors: np.ndarray | None = None) -> np.ndarray:
-        out = np.empty(tiles.shape, dtype=np.float32)
+    def _forward(self, tiles: np.ndarray, priors: np.ndarray | None) -> np.ndarray:
+        key = (id(tiles), tiles.shape)
+        if self._cache is not None and self._cache[0] == key:
+            return self._cache[1]
+        out = np.empty((len(tiles), self.model.out_channels, *tiles.shape[1:]), dtype=np.float32)
         for i in range(0, len(tiles), self.batch_size):
             x = torch.from_numpy(tiles[i : i + self.batch_size]).float()[:, None]
             if self.uses_design_prior:
@@ -116,9 +127,19 @@ class UNetSegmenter:
                 p = torch.from_numpy(priors[i : i + self.batch_size].astype(np.float32))[:, None]
                 x = torch.cat([x, p], dim=1)
             x = _pad_to_multiple(x, 2**self.model.depth)
-            y = torch.sigmoid(self.model(x.to(self.device))).cpu().numpy()[:, 0]
-            out[i : i + len(y)] = y[:, : tiles.shape[1], : tiles.shape[2]]
+            y = torch.sigmoid(self.model(x.to(self.device))).cpu().numpy()
+            out[i : i + len(y)] = y[:, :, : tiles.shape[1], : tiles.shape[2]]
+        self._cache = (key, out)
         return out
+
+    def predict(self, tiles: np.ndarray, priors: np.ndarray | None = None) -> np.ndarray:
+        return self._forward(tiles, priors)[:, 0]
+
+    def predict_defects(self, tiles: np.ndarray, priors: np.ndarray | None = None) -> tuple[np.ndarray, np.ndarray]:
+        if not self.predicts_defects:
+            raise ValueError("model has no defect head")
+        y = self._forward(tiles, priors)
+        return y[:, 1], y[:, 2]
 
 
 def _pad_to_multiple(x: torch.Tensor, m: int) -> torch.Tensor:

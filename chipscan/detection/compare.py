@@ -50,11 +50,31 @@ def compare_tile(
     id_start: int = 0,
     threshold: float = 0.5,
 ) -> list[Defect]:
-    """Compare one tile. `prob`/`design` are the tile *core* arrays; `core_origin_px` is
-    the level-0 px position of their (0,0)."""
-    classifier = classifier or RuleClassifier(tolerance_px=cfg.tolerance_px)
+    """Tolerance-band comparison of one tile. `prob`/`design` are the tile *core* arrays;
+    `core_origin_px` is the level-0 px position of their (0,0)."""
     extra, missing = diff_masks(prob, design, threshold, cfg.tolerance_px)
-    pred = prob > threshold
+    score_map = np.abs(prob - design.astype(np.float32))
+    return defects_from_masks(
+        extra, missing, score_map, design, prob > threshold, core_origin_px, warp, pixel_size_um, cfg, tile_index, classifier, id_start
+    )
+
+
+def defects_from_masks(
+    extra: np.ndarray,
+    missing: np.ndarray,
+    score_map: np.ndarray,
+    design: np.ndarray,
+    pred: np.ndarray,
+    core_origin_px: tuple[float, float],
+    warp: WarpField,
+    pixel_size_um: float,
+    cfg: DetectionConfig,
+    tile_index: int = -1,
+    classifier: Classifier | None = None,
+    id_start: int = 0,
+) -> list[Defect]:
+    """Turn binary extra/missing masks (from any detector) into classified Defect records."""
+    classifier = classifier or RuleClassifier(tolerance_px=cfg.tolerance_px)
     dbool = design.astype(bool)
     min_px = max(cfg.min_area_px, int(round(cfg.min_area_um2 / pixel_size_um**2)))
     ox, oy = core_origin_px
@@ -64,13 +84,12 @@ def compare_tile(
         for blob, bb_local, area in blobs_from_mask(mask, min_px):
             cls, meta = ("unclassified", {})
             if cfg.classify:
-                # classify in a local window for speed
                 x0, y0, x1, y1 = bb_local.pad(8 + 2 * cfg.tolerance_px).to_int()
                 x0, y0 = max(x0, 0), max(y0, 0)
                 win = (slice(y0, y1), slice(x0, x1))
                 ctx = BlobContext(blob[win], dbool[win], pred[win], pixel_size_um)
                 cls, meta = classifier.classify(kind, ctx)
-            score = float(np.abs(prob[blob] - design[blob].astype(np.float32)).mean())
+            score = float(score_map[blob].mean())
             polys_px = [c + np.array([ox, oy]) for c in contours_px(blob)]
             polys_um = [warp.px_to_world(p) for p in polys_px]
             bb_px = BBox(bb_local.x0 + ox, bb_local.y0 + oy, bb_local.x1 + ox, bb_local.y1 + oy)

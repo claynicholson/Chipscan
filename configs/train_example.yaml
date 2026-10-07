@@ -1,0 +1,37 @@
+# Training run for the inspection UNet.  Run:  chipscan train configs/train_example.yaml
+#
+# Each scene is a pipeline YAML (image + design + registration).  The scene is registered
+# (or its saved transform loaded), then tiles are drawn from it, the design is rendered as the
+# label and as an input prior, and synthetic defects are injected into the image guided by
+# the design.  No manual annotation is involved.  Add every reticle/die you have as a scene:
+# more scenes = more appearance variety = a more robust model.
+scenes:
+  - ../data/synthetic/config.yaml
+  # - my_wafer_B1.yaml
+  # - my_wafer_A3.yaml
+
+out: ../models/unet_synthetic.pt
+epochs: 12
+samples_per_epoch: 1500
+tile_px: 256
+batch_size: 16
+lr: 0.002
+base_channels: 24
+depth: 4
+use_prior: true          # 2-channel input: image + rendered design
+prior_jitter_px: 1.0     # shift the prior randomly so registration slop is learned as normal
+ignore_px: 1             # ignore band at design edges for the metal head only
+val_frac: 0.1            # right-most strip of each scene is held out
+device: auto             # mps on Apple silicon, cuda on NVIDIA
+num_workers: 0
+defect_pos_weight: 4.0
+seed: 0
+injection:
+  enabled: true
+  p_defect_tile: 0.85
+  max_per_tile: 4
+  min_radius_px: 1.5
+  max_radius_px: 12.0
+  p_bar: 0.35
+  edge_softness_px: 0.7
+  texture_noise: 1.0

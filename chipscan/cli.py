@@ -4,7 +4,7 @@
     chipscan layers   DESIGN.gds
     chipscan register CONFIG.yaml
     chipscan inspect  CONFIG.yaml
-    chipscan train    CONFIG.yaml --out model.pt [--epochs 10] [--prior]
+    chipscan train    TRAIN.yaml
     chipscan synth    OUT_DIR  [--rotation 3.7 --scale 1.02 --flip]
     chipscan score    outputs/x.defects.json truth.json
 """
@@ -85,32 +85,25 @@ def inspect(config: Path):
 
 
 @app.command()
-def train(
-    config: Path,
-    out: Path = typer.Option(Path("models/unet.pt")),
-    epochs: int = 10,
-    samples: int = 2000,
-    tile: int = 256,
-    batch: int = 8,
-    lr: float = 1e-3,
-    prior: bool = typer.Option(False, help="Feed the rendered design as a second input channel"),
-    device: str = "auto",
-):
-    """Train a UNet using the registered design as labels (no manual annotation)."""
-    from chipscan.config import PipelineConfig
-    from chipscan.pipeline import load_inputs
-    from chipscan.pipeline import register as _register
-    from chipscan.segmentation.dataset import DesignLabeledTiles
-    from chipscan.segmentation.train import split_dataset
+def train(config: Path):
+    """Train the inspection UNet from a training YAML (scenes + hyper-parameters). No hand labels needed."""
+    from chipscan.config import PipelineConfig, TrainConfig
+    from chipscan.pipeline import load_scene
+    from chipscan.segmentation.dataset import InjectionConfig, InspectionTiles, split_scene
     from chipscan.segmentation.train import train as _train
 
-    cfg = PipelineConfig.load(config)
-    src, des = load_inputs(cfg)
-    warp, px, _ = _register(cfg, src, des)
-    ds = DesignLabeledTiles(src, des, warp, tile, samples, cfg.detection.tolerance_px, prior)
-    tr, va = split_dataset(ds)
-    _train(tr, out, epochs, batch, lr, cfg.segmentation.base_channels, cfg.segmentation.depth, device, va)
-    console.print(f"saved {out}")
+    tc = TrainConfig.load(config)
+    train_scenes, val_scenes = [], []
+    for sp in tc.scenes:
+        sc = load_scene(PipelineConfig.load(sp))
+        tr, va = split_scene(sc, tc.val_frac)
+        train_scenes.append(tr)
+        val_scenes.append(va)
+    inj = InjectionConfig(**tc.injection.model_dump())
+    ds = InspectionTiles(train_scenes, tc.tile_px, tc.samples_per_epoch, tc.ignore_px, tc.use_prior, tc.prior_jitter_px, True, inj, tc.seed)
+    vs = InspectionTiles(val_scenes, tc.tile_px, max(tc.samples_per_epoch // 10, 32), tc.ignore_px, tc.use_prior, 0.0, False, inj, tc.seed + 1)
+    _train(ds, tc.out, tc.epochs, tc.batch_size, tc.lr, tc.base_channels, tc.depth, tc.device, vs, tc.num_workers, tc.defect_pos_weight, tc.init_from)
+    console.print(f"saved {tc.out} (+ .history.json)")
 
 
 @app.command()

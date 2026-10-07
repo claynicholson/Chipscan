@@ -1,4 +1,10 @@
-from chipscan.detection.compare import compare_tile, diff_masks, merge_defects, tolerance_band
+from chipscan.detection.compare import (
+    compare_tile,
+    defects_from_masks,
+    diff_masks,
+    merge_defects,
+    tolerance_band,
+)
 from chipscan.detection.defects import (
     EXTRA,
     MISSING,
@@ -18,6 +24,7 @@ __all__ = [
     "Defect",
     "RuleClassifier",
     "compare_tile",
+    "defects_from_masks",
     "diff_masks",
     "measure_cut",
     "merge_defects",

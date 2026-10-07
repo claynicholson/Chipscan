@@ -59,7 +59,7 @@ gap/centre/gap to within 0.15 um.  Edge-attached defects must protrude more than
 | `chipscan/design/` | GDS loading, layer/polarity handling, on-demand rasterization |
 | `chipscan/registration/` | coarse (Fourier-Mellin + phase correlation, scored hypotheses) and fine (tile grid, robust affine refit, residual field) |
 | `chipscan/tiling/` | tiles with context margin; cores partition the image exactly, so no seams |
-| `chipscan/segmentation/` | `Segmenter` protocol; classical baselines; UNet + self-labelled training |
+| `chipscan/segmentation/` | `Segmenter` protocol; classical baselines; 3-head UNet, injection dataset, trainer |
 | `chipscan/detection/` | tolerance-band diff, connected components, rule taxonomy, merge, line-cut metrology |
 | `chipscan/export/` | KLayout `.lyrdb`, defect GDS, JSON/CSV, overlay PNG |
 | `chipscan/pipeline.py` | orchestration; every stage is callable on its own |
@@ -74,8 +74,36 @@ gap/centre/gap to within 0.15 um.  Edge-attached defects must protrude more than
   `segmentation/__init__.py:build_segmenter`.
 * **Product-specific defect classes** (airbridge collapse, junction defects):
   implement `Classifier.classify(kind, ctx)` and pass it to `run_inspection`.
-* **Training the UNet** uses the registered design as labels; no annotation needed:
-  `uv run chipscan train my.yaml --out models/unet.pt --epochs 10 [--prior]`.
+* **Training the UNet** needs no annotation: `uv run chipscan train configs/train_example.yaml`.
+  See "Training a detector" below.
+
+## Training a detector
+
+The classical baseline thresholds the image and diffs it against the design outside a
+tolerance band. The learned detector is trained to output defect maps directly, with
+no hand labels, from two free signals:
+
+1. **The design is the label.** Tiles are drawn from registered scenes; the rendered
+   design is the metal target (with a 1 px ignore band) and, optionally, an input
+   channel. The input prior is jittered by a pixel so registration slop is learned as
+   normal.
+2. **Design-aware defect injection.** Guided by the design, metal-textured blobs are
+   pasted into gaps (shorts, particles, protrusions) and substrate-textured blobs onto
+   metal (opens, voids, notches); textures come from the tile itself. The injected
+   regions are the `extra` / `missing` targets.
+
+Feeding the design as an input while using it as the only label is degenerate (the net
+copies the prior); the injected defects are what force it to look at the image.
+
+```bash
+uv run chipscan train configs/train_example.yaml                     # scenes listed in the YAML
+uv run python scripts/benchmark_synthetic.py --model models/unet_synthetic.pt   # classical vs UNet
+```
+
+Then set `segmentation.method: unet` and `model_path` in a pipeline YAML. A 3-output
+model is used as a detector (its defect channels replace the tolerance-band diff); a
+1-output model is used as a plain segmenter. Add every registered reticle you have as a
+scene; appearance variety is what makes the model robust on real mosaics.
 
 ## Defect taxonomy (default rules)
 
