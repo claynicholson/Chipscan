@@ -40,9 +40,9 @@ STATIC = Path(__file__).parent / "static"
 @dataclass
 class Run:
     name: str
-    cfg: PipelineConfig
+    cfg: PipelineConfig | None
     source: ImageSource
-    design: Design
+    design: Design | None
     warp: WarpField
     pixel_size_um: float
     defects: list[dict]
@@ -51,6 +51,31 @@ class Run:
     cache_dir: Path
     reg_info: dict = field(default_factory=dict)
     lock: threading.Lock = field(default_factory=threading.Lock)
+
+    @staticmethod
+    def load_anomaly(anomalies_json: Path) -> Run:
+        """A design-free run: <name>.anomalies.json next to <name>.anomaly.zarr (from `chipscan detect`)."""
+        anomalies_json = Path(anomalies_json)
+        out = anomalies_json.parent
+        name = anomalies_json.name[: -len(".anomalies.json")]
+        rec = json.loads(anomalies_json.read_text())
+        defects = rec["defects"]
+        px = rec.get("summary", {}).get("pixel_size_um") or 1.0
+        src_path = rec.get("summary", {}).get("image")
+        if not src_path:
+            raise FileNotFoundError(f"{anomalies_json}: no image path recorded; re-run `chipscan detect`")
+        src = open_source(src_path, px)
+        amap = None
+        az = out / f"{name}.anomaly.zarr"
+        if az.exists():
+            amap = zarr.open_group(str(az), mode="r")["0"]
+        for d in defects:  # anomalies already carry px polygons; keep the viewer's field names
+            d.setdefault("polygons_px", [])
+            d.setdefault("bbox_um", {k: v * px for k, v in d["bbox_px"].items()})
+        cfg = None
+        run = Run(name, cfg, src, None, WarpField(Affine2D.scaling(1.0 / px)), px, defects, amap, out, out / f"{name}.tiles")
+        run.cache_dir.mkdir(parents=True, exist_ok=True)
+        return run
 
     @staticmethod
     def load(config_path: Path) -> Run:
@@ -119,6 +144,8 @@ class Run:
         p = self.cache_dir / f"des_{level}_{x}_{y}.png"
         if p.exists():
             return p.read_bytes()
+        if self.design is None:
+            return _png_bytes(np.zeros((TILE, TILE, 4), np.uint8))
         s = 2**level
         bb0 = BBox(x * TILE * s, y * TILE * s, (x + 1) * TILE * s, (y + 1) * TILE * s)
         a = Affine2D.scaling(1.0 / s).compose(self.warp.local_affine(bb0))
@@ -171,8 +198,8 @@ class Run:
         return buf.tobytes()
 
     def measure(self, x0: float, y0: float, x1: float, y1: float) -> dict:
-        if self.pred is None:
-            raise HTTPException(400, "no prediction mask for this run")
+        if self.pred is None or self.design is None:
+            raise HTTPException(400, "measurement needs a design-referenced run with a prediction mask")
         p0 = self.warp.px_to_world(np.array([[x0, y0]]))[0]
         p1 = self.warp.px_to_world(np.array([[x1, y1]]))[0]
 
@@ -229,7 +256,8 @@ class ReviewIn(BaseModel):
 def create_app(config_paths: list[Path], db_path: Path | None = None) -> FastAPI:
     runs: dict[str, Run] = {}
     for p in config_paths:
-        r = Run.load(Path(p))
+        p = Path(p)
+        r = Run.load_anomaly(p) if p.name.endswith(".anomalies.json") else Run.load(p)
         runs[r.name] = r
     if not runs:
         raise ValueError("no runs loaded")
@@ -261,9 +289,9 @@ def create_app(config_paths: list[Path], db_path: Path | None = None) -> FastAPI
                     "pixel_size_um": r.pixel_size_um,
                     "n_defects": len(r.defects),
                     "n_reviewed": sum(1 for v in rv.values() if v["status"] != "unreviewed"),
-                    "image": str(r.cfg.image.path.name),
-                    "design": str(r.cfg.design.path.name),
-                    "segmenter": r.cfg.segmentation.method,
+                    "image": str(r.cfg.image.path.name) if r.cfg else getattr(r.source, "path", Path("?")).name,
+                    "design": str(r.cfg.design.path.name) if r.cfg else "none (design-free)",
+                    "segmenter": r.cfg.segmentation.method if r.cfg else "anomaly",
                     "registration": r.warp.affine.to_dict(),
                     "fine_rms_px": (r.reg_info.get("fine") or {}).get("rms_residual_px"),
                     "coarse_score": (r.reg_info.get("coarse") or {}).get("score"),
@@ -277,7 +305,8 @@ def create_app(config_paths: list[Path], db_path: Path | None = None) -> FastAPI
         rv = db.get(name)
         out = []
         for d in r.defects:
-            rec = {k: d[k] for k in ("id", "kind", "class", "bbox_px", "bbox_um", "centroid_um", "area_um2", "area_px", "score", "polygons_px")}
+            rec = {k: d.get(k) for k in ("id", "kind", "class", "bbox_px", "bbox_um", "centroid_um", "area_um2", "area_px", "score", "polygons_px")}
+            rec["repeat_ncc"] = d.get("repeat_ncc")
             rec["review"] = rv.get(d["id"], {"status": "unreviewed", "cls": None, "note": None})
             out.append(rec)
         return out
@@ -319,6 +348,8 @@ def create_app(config_paths: list[Path], db_path: Path | None = None) -> FastAPI
     def positions(name: str, ids: str = Query("")):
         r = get_run(name)
         want = {int(i) for i in ids.split(",") if i.strip()} if ids else None
+        if r.cfg is None:
+            raise HTTPException(400, "stage frame unknown for a design-free run")
         st = r.cfg.stage
         ox, oy = st.origin_stage_um
         pos = [

@@ -338,7 +338,10 @@ def anomalies_from_map(amap, threshold: float = 0.5, min_area_px: int = 6, pixel
 
 def write_anomaly_outputs(out_dir: Path, name: str, recs: list[dict], source: ImageSource, amap, pixel_size_um: float | None, overlay_max_px: int = 3000) -> dict[str, Path]:
     out_dir.mkdir(parents=True, exist_ok=True)
-    (out_dir / f"{name}.anomalies.json").write_text(json.dumps({"summary": {"n": len(recs), "pixel_size_um": pixel_size_um}, "defects": recs}, indent=2))
+    src_path = getattr(source, "path", None)
+    (out_dir / f"{name}.anomalies.json").write_text(
+        json.dumps({"summary": {"n": len(recs), "pixel_size_um": pixel_size_um, "image": str(src_path) if src_path else None}, "defects": recs}, indent=2)
+    )
     lines = ["id,area_px,area_um2,score,cx_px,cy_px"] + [f"{r['id']},{r['area_px']},{r['area_um2']:.2f},{r['score']:.3f},{r['centroid_px'][0]:.1f},{r['centroid_px'][1]:.1f}" for r in recs]
     (out_dir / f"{name}.anomalies.csv").write_text("\n".join(lines) + "\n")
     # overlay

@@ -50,6 +50,31 @@ gap/centre/gap to within 0.15 um.  Edge-attached defects must protrude more than
 5. `uv run chipscan inspect my.yaml`
 6. Load `outputs/<name>.lyrdb` in KLayout (Tools > Marker Browser) over the GDS.
 
+## Design-free anomaly detection (no GDS)
+
+```bash
+uv run chipscan train-anomaly configs/train_anomaly.yaml        # scenes are just images
+uv run chipscan detect data/pyramids/AFT5_07_C1.zarr --model models/anomaly_v3.pt --pixel-size 0.814
+uv run chipscan serve outputs/anomaly/AFT5_07_C1.anomalies.json  # view the outlines
+```
+
+When no layout is available (or it is the wrong revision), a second detector works from
+the image alone. It is trained self-supervised: tiles from any number of scenes get
+synthetic anomalies injected (blobs, short rough bars, scratches, discoloration, blur
+spots, erasures, all forced to contrast with their surroundings) under heavy appearance
+randomisation (gamma, contrast, polarity, blur, noise, 0.6x-1.6x scale, mosaic steps), and
+a UNet learns to outline them. Trained on two chip designs, a PCB panel and synthetic
+chips, validated on a reticle it never saw: IoU 0.87, recall 0.94, precision 0.92 on
+injected anomalies.
+
+A learned detector alone cannot tell unfamiliar *designed* structure from a defect, so
+`detect` adds **repeat suppression**: it estimates the image's repetition pitches by
+autocorrelation (it finds the chip pitch on a reticle by itself) and drops every
+candidate that is reproduced one pitch away. Structure repeats; defects do not. On a real
+AFT5 reticle this halves the candidates and leaves contamination (a fiber, a particle)
+plus the per-chip labels and split-to-split design differences, which a design-free
+method cannot resolve.
+
 ## Web viewer
 
 ```bash

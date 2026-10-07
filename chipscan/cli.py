@@ -264,7 +264,7 @@ def gallery(
 
 @app.command()
 def serve(
-    configs: list[Path] = typer.Argument(..., help="Pipeline YAMLs whose `inspect` outputs exist"),
+    configs: list[Path] = typer.Argument(..., help="Pipeline YAMLs whose `inspect` outputs exist, and/or <name>.anomalies.json files from `chipscan detect`"),
     host: str = typer.Option("127.0.0.1", help="Use 0.0.0.0 to serve the lab network"),
     port: int = 8000,
     db: Path | None = typer.Option(None, help="SQLite file for review decisions (default: next to the first run's outputs)"),

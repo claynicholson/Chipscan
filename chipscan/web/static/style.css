@@ -31,7 +31,7 @@ aside { display: flex; flex-direction: column; border-right: 1px solid var(--lin
 .badge.false_alarm { color: #0c0f13; background: #ff7a7a; border-color: #ff7a7a; }
 .badge.unsure { color: #0c0f13; background: #ffd27a; border-color: #ffd27a; }
 .sel { color: var(--accent); font-weight: 700; margin-left: 4px; }
-.cls-short { color: var(--short); } .cls-open { color: var(--open); } .cls-particle { color: var(--particle); }
+.cls-anomaly { color: #ff6a00; } .cls-short { color: var(--short); } .cls-open { color: var(--open); } .cls-particle { color: var(--particle); }
 .cls-protrusion { color: var(--protrusion); } .cls-notch { color: var(--notch); } .cls-void { color: var(--void); }
 .cls-missing_feature, .cls-extra_feature { color: var(--feature); }
 .help { padding: 8px; border-top: 1px solid var(--line); color: var(--muted); font-size: 11.5px; }

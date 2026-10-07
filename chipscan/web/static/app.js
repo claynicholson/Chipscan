@@ -1,7 +1,7 @@
 /* chipscan viewer front end: OpenSeadragon canvas + defect list + keyboard review. */
 (() => {
-  const COLORS = { short: "#ff4d4d", open: "#ff4dff", particle: "#ffa63d", protrusion: "#ffe14d", notch: "#4de3ff", void: "#4db8ff", missing_feature: "#c04dff", extra_feature: "#c04dff", unclassified: "#5ad17a" };
-  const SEV = { short: 5, open: 5, missing_feature: 4, extra_feature: 4, particle: 3, protrusion: 2, notch: 2, void: 1, unclassified: 0 };
+  const COLORS = { anomaly: "#ff6a00", short: "#ff4d4d", open: "#ff4dff", particle: "#ffa63d", protrusion: "#ffe14d", notch: "#4de3ff", void: "#4db8ff", missing_feature: "#c04dff", extra_feature: "#c04dff", unclassified: "#5ad17a" };
+  const SEV = { anomaly: 3, short: 5, open: 5, missing_feature: 4, extra_feature: 4, particle: 3, protrusion: 2, notch: 2, void: 1, unclassified: 0 };
   const CLASS_KEYS = { "1": "short", "2": "open", "3": "particle", "4": "protrusion", "5": "notch", "6": "void" };
 
   const $ = (id) => document.getElementById(id);
@@ -160,7 +160,7 @@
       <div class="row ${i === active ? "active" : ""}" data-i="${i}">
         <img loading="lazy" src="/api/runs/${run.name}/thumb/${d.id}.jpg" alt="">
         <div><div class="title cls-${d.class}">${d.class} <span class="muted">#${d.id}</span>${selected.has(d.id) ? '<span class="sel">●</span>' : ""}</div>
-          <div class="sub">${d.kind.replace("_metal", "")} · ${d.area_um2.toFixed(1)} µm² · score ${d.score.toFixed(2)}${d.review.cls && d.review.cls !== d.class ? ` · reviewed as <b>${d.review.cls}</b>` : ""}</div></div>
+          <div class="sub">${d.kind.replace("_metal", "")} · ${d.area_um2.toFixed(1)} µm² · score ${d.score.toFixed(2)}${d.repeat_ncc != null ? ` · twin ${d.repeat_ncc.toFixed(2)}` : ""}${d.review.cls && d.review.cls !== d.class ? ` · reviewed as <b>${d.review.cls}</b>` : ""}</div></div>
         <span class="badge ${d.review.status}">${d.review.status.replace("_", " ")}</span>
       </div>`).join("");
     $("list").querySelectorAll(".row").forEach(el => el.onclick = () => setActive(+el.dataset.i, true));
