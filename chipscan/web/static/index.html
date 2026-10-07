@@ -1,0 +1,52 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>chipscan viewer</title>
+<link rel="stylesheet" href="/static/style.css">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/openseadragon/4.1.1/openseadragon.min.js"></script>
+</head>
+<body>
+<header>
+  <div class="brand">chipscan</div>
+  <select id="run"></select>
+  <div id="runinfo" class="muted"></div>
+  <div class="spacer"></div>
+  <label class="toggle"><input type="checkbox" id="layer-design" checked> design edges</label>
+  <label class="toggle"><input type="checkbox" id="layer-pred"> prediction heatmap</label>
+  <label class="toggle"><input type="checkbox" id="layer-defects" checked> defect outlines</label>
+  <button id="btn-measure" title="Draw a line to measure metal/gap widths (m)">measure</button>
+  <button id="btn-positions" title="PRECiV position list of selected defects">re-image selected</button>
+  <a id="btn-export" href="#" download>export CSV</a>
+  <input id="reviewer" placeholder="your name" title="recorded with each review">
+</header>
+
+<main>
+  <aside>
+    <div class="filters">
+      <input id="q" placeholder="filter: class, status, >area, id">
+      <select id="sort">
+        <option value="severity">sort: severity</option>
+        <option value="area">sort: area</option>
+        <option value="score">sort: score</option>
+        <option value="id">sort: id</option>
+      </select>
+    </div>
+    <div id="stats" class="stats"></div>
+    <div id="list" class="list"></div>
+    <div class="help">
+      <b>keys</b> ↑/↓ or j/k next · <b>r</b> real · <b>f</b> false alarm · <b>u</b> unsure · <b>x</b> select for re-image ·
+      <b>1</b> short <b>2</b> open <b>3</b> particle <b>4</b> protrusion <b>5</b> notch <b>6</b> void · <b>m</b> measure · <b>esc</b> cancel
+    </div>
+  </aside>
+  <section id="viewer-wrap">
+    <div id="viewer"></div>
+    <canvas id="overlay"></canvas>
+    <div id="readout" class="readout"></div>
+    <div id="measure-out" class="measure-out hidden"></div>
+  </section>
+</main>
+<script src="/static/app.js"></script>
+</body>
+</html>

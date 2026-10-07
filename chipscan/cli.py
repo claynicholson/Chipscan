@@ -185,6 +185,20 @@ def gallery(
 
 
 @app.command()
+def serve(
+    configs: list[Path] = typer.Argument(..., help="Pipeline YAMLs whose `inspect` outputs exist"),
+    host: str = typer.Option("127.0.0.1", help="Use 0.0.0.0 to serve the lab network"),
+    port: int = 8000,
+    db: Path | None = typer.Option(None, help="SQLite file for review decisions (default: next to the first run's outputs)"),
+):
+    """Web viewer: deep-zoom results with design/heatmap overlays, defect review, metrology, re-image export."""
+    from chipscan.web.server import serve as _serve
+
+    console.print(f"open http://{'localhost' if host in ('127.0.0.1', '0.0.0.0') else host}:{port}")
+    _serve(configs, host, port, db)
+
+
+@app.command()
 def synth(
     out_dir: Path,
     rotation: float = typer.Option(3.7, help="Tilt of the image relative to the design, degrees"),

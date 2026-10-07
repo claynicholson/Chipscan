@@ -50,6 +50,24 @@ gap/centre/gap to within 0.15 um.  Edge-attached defects must protrude more than
 5. `uv run chipscan inspect my.yaml`
 6. Load `outputs/<name>.lyrdb` in KLayout (Tools > Marker Browser) over the GDS.
 
+## Web viewer
+
+```bash
+uv run chipscan serve data/synthetic/config.yaml other_run.yaml --port 8000   # add --host 0.0.0.0 for the lab network
+```
+
+A local web app (FastAPI + OpenSeadragon) over any number of inspected runs:
+
+* deep-zoom of the full mosaic, tiles cut on demand from the zarr pyramid and cached;
+* overlays: design edges rendered per tile through the saved registration, the model's
+  probability heatmap, and defect outlines coloured by class;
+* defect list with thumbnails, filtering (`short`, `>50`, `unreviewed`, `#12`), sorting, and
+  keyboard review: `r` real, `f` false alarm, `u` unsure, `1`-`6` reclassify, `x` select;
+* reviews go to `reviews.sqlite` next to the outputs and come back out as CSV, so hand
+  labelling is a by-product of looking at results;
+* `m` measures metal/gap widths along a drawn line; "re-image selected" downloads a PRECiV
+  PositionList of the selected defects for the microscope to revisit at high magnification.
+
 ## Layout
 
 | module | role |
@@ -63,6 +81,7 @@ gap/centre/gap to within 0.15 um.  Edge-attached defects must protrude more than
 | `chipscan/detection/` | tolerance-band diff, connected components, rule taxonomy, merge, line-cut metrology |
 | `chipscan/export/` | KLayout `.lyrdb`, defect GDS, JSON/CSV, overlay PNG |
 | `chipscan/pipeline.py` | orchestration; every stage is callable on its own |
+| `chipscan/web/` | FastAPI tile/defect/review server and the OpenSeadragon front end |
 | `chipscan/synth.py` | synthetic chip generator with ground truth |
 | `chipscan/evaluate.py` | recall / class accuracy / false alarms against a truth list |
 

@@ -1,0 +1,45 @@
+:root {
+  --bg: #0f1216; --panel: #161b22; --line: #2a313b; --text: #d7dee7; --muted: #8b96a5;
+  --accent: #5ad17a; --short: #ff4d4d; --open: #ff4dff; --particle: #ffa63d; --protrusion: #ffe14d;
+  --notch: #4de3ff; --void: #4db8ff; --feature: #c04dff;
+}
+* { box-sizing: border-box; }
+html, body { height: 100%; margin: 0; background: var(--bg); color: var(--text); font: 13px/1.4 -apple-system, "Segoe UI", Helvetica, Arial, sans-serif; }
+header { display: flex; align-items: center; gap: 10px; padding: 6px 12px; background: var(--panel); border-bottom: 1px solid var(--line); height: 44px; }
+.brand { font-weight: 700; letter-spacing: .04em; color: var(--accent); }
+.spacer { flex: 1; }
+.muted { color: var(--muted); }
+header select, header input, header button, header a { background: #0c0f13; color: var(--text); border: 1px solid var(--line); border-radius: 6px; padding: 4px 8px; font: inherit; text-decoration: none; }
+header button:hover, header a:hover { border-color: var(--accent); cursor: pointer; }
+header button.active { border-color: var(--accent); color: var(--accent); }
+.toggle { display: flex; gap: 4px; align-items: center; color: var(--muted); }
+main { display: grid; grid-template-columns: 340px 1fr; height: calc(100% - 44px); }
+aside { display: flex; flex-direction: column; border-right: 1px solid var(--line); background: var(--panel); min-height: 0; }
+.filters { display: flex; gap: 6px; padding: 8px; border-bottom: 1px solid var(--line); }
+.filters input, .filters select { flex: 1; background: #0c0f13; color: var(--text); border: 1px solid var(--line); border-radius: 6px; padding: 4px 8px; font: inherit; min-width: 0; }
+.stats { padding: 6px 8px; border-bottom: 1px solid var(--line); display: flex; flex-wrap: wrap; gap: 4px 10px; color: var(--muted); font-size: 12px; }
+.stats b { color: var(--text); }
+.list { flex: 1; overflow: auto; min-height: 0; }
+.row { display: grid; grid-template-columns: 48px 1fr auto; gap: 8px; align-items: center; padding: 6px 8px; border-bottom: 1px solid #1d232c; cursor: pointer; }
+.row:hover { background: #1b222c; }
+.row.active { background: #1f2a36; outline: 1px solid var(--accent); outline-offset: -1px; }
+.row img { width: 48px; height: 48px; border-radius: 4px; background: #000; object-fit: cover; }
+.row .title { font-weight: 600; }
+.row .sub { color: var(--muted); font-size: 12px; }
+.badge { font-size: 11px; padding: 1px 6px; border-radius: 10px; border: 1px solid var(--line); color: var(--muted); white-space: nowrap; }
+.badge.real { color: #0c0f13; background: var(--accent); border-color: var(--accent); }
+.badge.false_alarm { color: #0c0f13; background: #ff7a7a; border-color: #ff7a7a; }
+.badge.unsure { color: #0c0f13; background: #ffd27a; border-color: #ffd27a; }
+.sel { color: var(--accent); font-weight: 700; margin-left: 4px; }
+.cls-short { color: var(--short); } .cls-open { color: var(--open); } .cls-particle { color: var(--particle); }
+.cls-protrusion { color: var(--protrusion); } .cls-notch { color: var(--notch); } .cls-void { color: var(--void); }
+.cls-missing_feature, .cls-extra_feature { color: var(--feature); }
+.help { padding: 8px; border-top: 1px solid var(--line); color: var(--muted); font-size: 11.5px; }
+.help b { color: var(--text); }
+#viewer-wrap { position: relative; min-width: 0; }
+#viewer { position: absolute; inset: 0; background: #000; }
+#overlay { position: absolute; inset: 0; pointer-events: none; }
+.readout { position: absolute; left: 10px; bottom: 10px; background: rgba(15,18,22,.85); border: 1px solid var(--line); border-radius: 6px; padding: 4px 8px; font-family: ui-monospace, Menlo, monospace; font-size: 12px; color: var(--muted); pointer-events: none; }
+.measure-out { position: absolute; right: 10px; bottom: 10px; background: rgba(15,18,22,.92); border: 1px solid var(--accent); border-radius: 6px; padding: 8px 10px; font-family: ui-monospace, Menlo, monospace; font-size: 12px; max-width: 360px; }
+.hidden { display: none; }
+@media (max-width: 900px) { main { grid-template-columns: 1fr; grid-template-rows: 40% 60%; } aside { border-right: 0; border-bottom: 1px solid var(--line); } }

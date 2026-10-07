@@ -1,0 +1,11 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "viewer",
+      "runtimeExecutable": "uv",
+      "runtimeArgs": ["run", "chipscan", "serve", "data/synthetic/config.yaml", "data/benchmark/case_102/config_unet.yaml", "--port", "8000"],
+      "port": 8000
+    }
+  ]
+}
