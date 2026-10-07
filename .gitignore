@@ -1,0 +1,33 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+dist/
+build/
+.pytest_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Data: never commit images, pyramids, or models
+data/
+*.zarr/
+*.png
+*.jpg
+*.jpeg
+*.jp2
+*.tif
+*.tiff
+*.vsi
+*.ets
+*.gds
+*.oas
+*.pt
+*.pth
+runs/
+outputs/
+
+# macOS
+.DS_Store
+._*

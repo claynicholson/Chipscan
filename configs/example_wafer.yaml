@@ -1,0 +1,67 @@
+# Example configuration for an Olympus DSX1000 reticle mosaic of a superconducting-qubit wafer.
+# Copy, edit paths, run:  chipscan inspect configs/my_wafer.yaml
+name: AHQ1_B1_reticle
+
+image:
+  path: "/Volumes/T9/Wafer Imaging/AHQ1_25_1_7/2026-03-11-AHQ1_25_1_7_B1-reticle.png"
+  pyramid_path: data/pyramids/AHQ1_B1_reticle.zarr   # built once, reused (~1/3 the PNG size)
+  pixel_size_um: 0.93        # nominal; coarse registration refines it (allow_scale: true)
+  channel: gray              # gray | r | g | b | max | min
+  invert: false
+
+design:
+  path: data/designs/AHQ1.gds           # <- get this from the lab
+  cell: null                            # null = largest top cell
+  layers: ["1/0"]                       # run `chipscan layers design.gds` to see what exists
+  polarity: drawn_is_etch               # most SC-qubit layouts draw the gaps; use drawn_is_metal otherwise
+  metal_bright: true                    # Nb/Al on Si looks brighter than the substrate in brightfield
+  region_um: null                       # e.g. [0, 0, 7000, 50000] to restrict to one die
+
+registration:
+  coarse:
+    target_pixel_size_um: 8.0
+    allow_flip: true
+    allow_scale: true
+    rotation_candidates_deg: [0, 90, 180, 270]
+  fine:
+    enabled: true
+    level_pixel_size_um: 2.0
+    tile_px: 512
+    grid: 10
+    max_shift_px: 48
+    residual_field: true                # absorbs stitching seams of the mosaic
+  transform_path: null                  # set to a saved *.registration.json to skip solving
+
+segmentation:
+  method: classical                     # classical | unet
+  classical_method: design_prior        # otsu | adaptive | design_prior
+  tile_px: 1024
+  margin_px: 64
+  threshold: 0.5
+  # model_path: models/unet_ahq1.pt     # for method: unet  (train with `chipscan train`)
+  # device: auto
+
+detection:
+  tolerance_px: 2                       # ignore disagreements within 2 px of a design edge
+  min_area_um2: 4.0                     # ~2 um particle at 1 um/px
+  merge_margin_um: 2.0
+
+metrology:
+  cuts:                                 # replaces the hand-measured spreadsheet
+    - name: feedline_cpw_A
+      p0_um: [1200.0, 24950.0]
+      p1_um: [1200.0, 25050.0]
+      expect_um: [6.0, 10.0, 6.0]       # gap, centre, gap
+
+stage:
+  enabled: true                         # write a PRECiV PositionList of defects to revisit
+  origin_stage_um: [98506.83, 112995.41]  # stage coords of design origin (from the reticle position XML)
+  flip_y: false
+
+export:
+  out_dir: outputs/AHQ1_B1_reticle
+  klayout_rdb: true                     # KLayout Marker Browser file
+  gds_layer: "99/0"                     # defects as polygons on this layer
+  positions_xml: true
+  overlay_png: true
+  save_pred_mask: true
