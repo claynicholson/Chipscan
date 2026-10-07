@@ -52,8 +52,14 @@ class CoarseRegistrationConfig(BaseModel):
     """Reject scale solutions further than this fraction from the expected value."""
     rotation_candidates_deg: list[float] = Field(default_factory=lambda: [0.0, 90.0, 180.0, 270.0])
     """Gross orientations to seed the search; fine angle is solved on top."""
+    rotation_search_deg: float = 6.0
+    """Brute-force angle search around each gross candidate (+/- degrees). Robust for sparse edge maps."""
+    rotation_step_deg: float = 0.5
+    """Step of the brute-force search; a second pass refines at 1/10 of this around the best."""
+    max_dim_px: int = 2048
+    """Working canvas size for the global solve (speed/accuracy trade-off)."""
     edge_sigma_px: float = 1.0
-    min_score: float = 0.05
+    min_score: float = 0.02
 
 
 class FineRegistrationConfig(BaseModel):

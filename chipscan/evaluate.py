@@ -83,7 +83,8 @@ def score(detections: list[dict[str, Any]], truth: list[dict[str, Any]], radius_
         matched[near] = True
         found += 1
         c["found"] += 1
-        if any(detections[i]["class"] == td["class"] for i in near):
+        # truth may be kind-level ('extra_metal' / 'missing_metal') when topology classes are unknown
+        if any(detections[i]["class"] == td["class"] or detections[i].get("kind") == td["class"] for i in near):
             classified += 1
             c["classified"] += 1
         else:

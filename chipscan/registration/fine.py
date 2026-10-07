@@ -45,10 +45,18 @@ class FineResult:
 def _tile_shift(img: np.ndarray, des: np.ndarray, max_shift: float, sigma: float = 1.0) -> tuple[float, float, float]:
     """Returns (dx, dy, confidence) in the tile's pixel units; shift moves design onto image."""
     ie, de = edge_map(img, sigma), edge_map(des, sigma)
+    if ie.shape != de.shape:  # defensive: crop to the common shape rather than failing silently
+        h, w = min(ie.shape[0], de.shape[0]), min(ie.shape[1], de.shape[1])
+        ie, de = ie[:h, :w], de[:h, :w]
     if de.max() == 0 or ie.std() < 1e-3 or (de > 0.2).mean() < 0.002:
         return 0.0, 0.0, 0.0
-    shift, _, _ = phase_cross_correlation(ie, de, upsample_factor=10, normalization="phase")
+    try:
+        shift, _, _ = phase_cross_correlation(ie, de, upsample_factor=10, normalization="phase")
+    except Exception:  # degenerate tile (all-constant edge map etc.)
+        return 0.0, 0.0, 0.0
     dy, dx = float(shift[0]), float(shift[1])
+    if not np.isfinite(dx) or not np.isfinite(dy):
+        return 0.0, 0.0, 0.0
     if abs(dx) > max_shift or abs(dy) > max_shift:
         return 0.0, 0.0, 0.0
     # confidence: NCC after applying the integer part of the shift
@@ -79,9 +87,12 @@ def fine_register(
 
     centers, dsts, confs, recs = [], [], [], []
     for b in boxes:
-        x0, y0, x1, y1 = b.to_int()
+        x0, y0, _, _ = b.to_int()
+        # snap to the pyramid level's grid so image tile and design render have identical shapes
+        x0, y0 = x0 - x0 % s, y0 - y0 % s
+        x1, y1 = x0 + cfg.tile_px * s, y0 + cfg.tile_px * s
         img = source.read_region(x0, y0, x1, y1, level=level)
-        lb = BBox(x0 / s, y0 / s, x0 / s + img.shape[1], y0 / s + img.shape[0])
+        lb = BBox(x0 // s, y0 // s, x0 // s + img.shape[1], y0 // s + img.shape[0])
         des = design.render(a_lvl, lb)
         dx, dy, conf = _tile_shift(img, des, cfg.max_shift_px)
         c = np.array(b.center)

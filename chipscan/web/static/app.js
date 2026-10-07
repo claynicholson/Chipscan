@@ -55,8 +55,14 @@
       viewer.addTiledImage({ tileSource: tileSource("design", "png"), opacity: $("layer-design").checked ? 1 : 0, success: e => { layers.design = e.item; } });
       viewer.addTiledImage({ tileSource: tileSource("pred", "png"), opacity: $("layer-pred").checked ? 1 : 0, success: e => { layers.pred = e.item; } });
     });
-    viewer.addHandler("update-viewport", drawOverlay);
-    viewer.addHandler("resize", drawOverlay);
+    viewer.addHandler("update-viewport", safeDraw);
+    viewer.addHandler("resize", safeDraw);
+    // OSD's own canvas can lag behind a window/pane resize; force it to follow the container
+    if (window.ResizeObserver) {
+      const ro = new ResizeObserver(() => { try { if (viewer.forceResize) viewer.forceResize(); viewer.forceRedraw(); } catch (e) {} safeDraw(); });
+      ro.observe($("viewer-wrap"));
+      viewer.addOnceHandler("close", () => ro.disconnect());
+    }
     viewer.addHandler("canvas-click", onCanvasClick);
     new OpenSeadragon.MouseTracker({ element: viewer.container, moveHandler: onMove }).setTracking(true);
   }
@@ -66,6 +72,8 @@
   function toImage(pt) { const b = baseImage(); return b ? b.viewerElementToImageCoordinates(pt) : viewer.viewport.viewerElementToImageCoordinates(pt); }
   function toScreen(x, y) { const b = baseImage(); const p = new OpenSeadragon.Point(x, y); return b ? b.imageToViewerElementCoordinates(p) : viewer.viewport.imageToViewerElementCoordinates(p); }
   function imageRect(x, y, w, h) { const b = baseImage(); return b ? b.imageToViewportRectangle(x, y, w, h) : viewer.viewport.imageToViewportRectangle(x, y, w, h); }
+
+  function safeDraw() { try { drawOverlay(); } catch (e) { console.warn("overlay draw failed", e); } }
 
   function drawOverlay() {
     const cv = $("overlay"), wrap = $("viewer-wrap");
@@ -203,7 +211,7 @@
     else if (e.key === "m") toggleMeasure();
     else if (e.key === "Escape") { measuring = false; measurePts = []; $("btn-measure").classList.remove("active"); $("measure-out").classList.add("hidden"); drawOverlay(); }
   });
-  function toggleMeasure() { measuring = !measuring; measurePts = []; $("btn-measure").classList.toggle("active", measuring); drawOverlay(); }
+  function toggleMeasure() { measuring = !measuring; measurePts = []; $("btn-measure").classList.toggle("active", measuring); if (!measuring) $("measure-out").classList.add("hidden"); safeDraw(); }
   $("btn-measure").onclick = toggleMeasure;
   $("btn-positions").onclick = () => { const ids = [...selected].join(","); if (!ids) { alert("select defects with x first"); return; } location.href = `/api/runs/${run.name}/positions.xml?ids=${ids}`; };
   $("layer-design").onchange = e => { if (layers.design) layers.design.setOpacity(e.target.checked ? 1 : 0); };
