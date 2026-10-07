@@ -28,7 +28,7 @@ def _lowres(source: ImageSource, level: int) -> tuple[int, np.ndarray]:
 
 
 def find_twins(
-    source: ImageSource, x: int, y: int, size: int, level: int = 3, min_ncc: float = 0.75, max_twins: int = 5, min_dist_px: int = 1500
+    source: ImageSource, x: int, y: int, size: int, level: int = 3, min_ncc: float = 0.65, max_twins: int = 8, min_dist_px: int = 1200
 ) -> list[tuple[int, int, float]]:
     """Pitch-free twin search: template-match the tile (at `level`) along its row and its column.
 
@@ -84,7 +84,7 @@ def die2die_tile(
     size: int,
     pitches: dict[str, list[float]],
     z_min: float = 5.0,
-    min_twins: int = 2,
+    min_twins: int = 3,
     smooth: float = 1.0,
 ) -> tuple[np.ndarray | None, np.ndarray | None, int]:
     """Returns (mask, zmap, n_twins) for the tile at (x, y); None if too few twins."""
