@@ -80,6 +80,7 @@ def train_reviewer(
 
     dev = pick_device(device or "auto")
     rng = np.random.default_rng(seed)
+    torch.manual_seed(seed)
     X = np.stack([crop_pair(source, cx, cy) for cx, cy, _ in labelled])
     y = np.array([lab for _, _, lab in labelled], dtype=np.float32)
     idx = rng.permutation(len(X))
