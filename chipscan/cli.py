@@ -127,6 +127,64 @@ def score(
 
 
 @app.command()
+def gallery(
+    config: Path,
+    n: int = typer.Option(24, help="Number of defects to show (most severe first)"),
+    out: Path | None = None,
+    truth: Path | None = typer.Option(None, help="Optional truth.json to mark injected defect centres"),
+):
+    """Montage of detected defects: image crop, design overlay, predicted mask, diff. Reads the outputs of `inspect`."""
+    import json
+
+    import zarr
+
+    from chipscan.config import PipelineConfig
+    from chipscan.detection.defects import Defect
+    from chipscan.geometry import BBox, WarpField
+    from chipscan.pipeline import load_inputs
+    from chipscan.viz.gallery import defect_gallery
+
+    cfg = PipelineConfig.load(config)
+    src, des = load_inputs(cfg)
+    od = cfg.export.out_dir
+    warp = WarpField.load(od / f"{cfg.name}.registration.json")
+    rec = json.loads((od / f"{cfg.name}.defects.json").read_text())["defects"]
+    # rebuild lightweight Defect objects (polygons come from the GDS export when present)
+    defs = []
+    polys_by_id: dict[int, list] = {}
+    gds_path = od / f"{cfg.name}.defects.gds"
+    if gds_path.exists():
+        import gdstk
+        import numpy as np
+
+        lib = gdstk.read_gds(str(gds_path))
+        cell = lib.top_level()[0]
+        labels = {(round(l.origin[0], 3), round(l.origin[1], 3)): int(l.text.split("#")[-1]) for l in cell.labels}
+        for p in cell.polygons:
+            # polygons are not tagged with ids in GDS; attach by nearest label centroid
+            c = np.asarray(p.points).mean(axis=0)
+            if labels:
+                k = min(labels, key=lambda q: (q[0] - c[0]) ** 2 + (q[1] - c[1]) ** 2)
+                polys_by_id.setdefault(labels[k], []).append(np.asarray(p.points, dtype=float))
+    for r in rec:
+        bp = r.get("bbox_px")
+        defs.append(
+            Defect(
+                r["id"], r["kind"], r["class"], BBox(**r["bbox_um"]), tuple(r["centroid_um"]), r["area_um2"], r["area_px"], r["score"],
+                polys_by_id.get(r["id"], []), BBox(**bp) if bp else None, r.get("tile", -1),
+            )
+        )
+    pred = None
+    pz = od / f"{cfg.name}.pred.zarr"
+    if pz.exists():
+        pred = zarr.open_group(str(pz), mode="r")["0"]
+    tr = json.loads(truth.read_text())["defects"] if truth else None
+    out = out or od / f"{cfg.name}.gallery.png"
+    defect_gallery(src, des, warp, defs, out, pred, n, truth=tr)
+    console.print(f"wrote {out}")
+
+
+@app.command()
 def synth(
     out_dir: Path,
     rotation: float = typer.Option(3.7, help="Tilt of the image relative to the design, degrees"),
