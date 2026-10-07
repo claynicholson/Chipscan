@@ -143,7 +143,8 @@ class AnomalyTiles(Dataset):
         return m
 
     _FONTS = (cv2.FONT_HERSHEY_SIMPLEX, cv2.FONT_HERSHEY_DUPLEX, cv2.FONT_HERSHEY_TRIPLEX, cv2.FONT_HERSHEY_PLAIN, cv2.FONT_HERSHEY_COMPLEX)
-    _CHARS = "ABCDEFGHJKLMNPQRSTUVWXYZ0123456789-"
+    _CHARS = "ABCDEFGHJKLMNPQRSTUVWXYZ0123456789-abcdefghijklmnopqrstuvwxyz"
+    _WORDS = ("um", "nm", "W", "L", "JJ", "N7", "G", "W400nm", "L2000nm", "2.1um", "um G", "x", "RET", "A-", "AFT")
 
     def draw_text(self, img: np.ndarray) -> np.ndarray:
         """Etched/printed labels are designed structure: draw some, unlabelled, so the model treats text as normal."""
@@ -151,9 +152,12 @@ class AnomalyTiles(Dataset):
         out = img.copy()
         n = int(self.rng.integers(1, 4))
         for _ in range(n):
-            txt = "".join(self.rng.choice(list(self._CHARS), size=int(self.rng.integers(1, 9))))
+            if self.rng.uniform() < 0.35:  # the kind of unit/parameter markings found on test structures
+                txt = " ".join(self.rng.choice(self._WORDS, size=int(self.rng.integers(1, 3))))
+            else:
+                txt = "".join(self.rng.choice(list(self._CHARS), size=int(self.rng.integers(1, 9))))
             font = int(self.rng.choice(self._FONTS))
-            scale = float(self.rng.uniform(0.5, 7.0))  # real chip labels can be well over 100 px tall
+            scale = float(self.rng.uniform(0.3, 7.0)) if self.rng.uniform() < 0.5 else float(self.rng.uniform(0.3, 1.2))  # many small, some huge
             thick = int(self.rng.integers(1, 3 + int(scale)))
             (tw, th), _ = cv2.getTextSize(txt, font, scale, thick)
             layer8 = np.zeros((h, w), np.uint8)
