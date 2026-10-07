@@ -1,0 +1,361 @@
+{
+  "aggregate": {
+    "classical": {
+      "n": 90,
+      "found": 82,
+      "classified": 81,
+      "fa": 1
+    },
+    "unet": {
+      "n": 90,
+      "found": 90,
+      "classified": 88,
+      "fa": 0
+    }
+  },
+  "cases": [
+    {
+      "seed": 101,
+      "rotation": 2.0,
+      "scale": 1.0,
+      "flip": false,
+      "classical": {
+        "n_truth": 30,
+        "found": 27,
+        "classified": 27,
+        "false_alarms": 1,
+        "recall": 0.9,
+        "class_accuracy": 0.9,
+        "precision": 0.9642857142857143,
+        "per_class": {
+          "particle": {
+            "n": 6,
+            "found": 6,
+            "classified": 6
+          },
+          "short": {
+            "n": 6,
+            "found": 6,
+            "classified": 6
+          },
+          "open": {
+            "n": 6,
+            "found": 6,
+            "classified": 6
+          },
+          "void": {
+            "n": 6,
+            "found": 6,
+            "classified": 6
+          },
+          "protrusion": {
+            "n": 6,
+            "found": 3,
+            "classified": 3
+          }
+        },
+        "misses": [
+          {
+            "class": "protrusion",
+            "x_um": 1088.8489409245433,
+            "y_um": 1120.0,
+            "size_um": 8.0,
+            "near": []
+          },
+          {
+            "class": "protrusion",
+            "x_um": 448.8520489202564,
+            "y_um": 1120.0,
+            "size_um": 8.0,
+            "near": []
+          },
+          {
+            "class": "protrusion",
+            "x_um": 1067.7865015971627,
+            "y_um": 1120.0,
+            "size_um": 10.0,
+            "near": []
+          }
+        ],
+        "false_alarm_list": [
+          {
+            "class": "protrusion",
+            "area_um2": 10.99920800414092,
+            "centroid_um": [
+              2130.001599326027,
+              950.3433954780885
+            ]
+          }
+        ]
+      },
+      "unet": {
+        "n_truth": 30,
+        "found": 30,
+        "classified": 29,
+        "false_alarms": 0,
+        "recall": 1.0,
+        "class_accuracy": 0.9666666666666667,
+        "precision": 1.0,
+        "per_class": {
+          "particle": {
+            "n": 6,
+            "found": 6,
+            "classified": 6
+          },
+          "short": {
+            "n": 6,
+            "found": 6,
+            "classified": 6
+          },
+          "open": {
+            "n": 6,
+            "found": 6,
+            "classified": 6
+          },
+          "void": {
+            "n": 6,
+            "found": 6,
+            "classified": 6
+          },
+          "protrusion": {
+            "n": 6,
+            "found": 6,
+            "classified": 5
+          }
+        },
+        "misses": [
+          {
+            "class": "protrusion",
+            "x_um": 1496.0445141981113,
+            "y_um": 1080.0,
+            "size_um": 10.0,
+            "near": [
+              "short"
+            ]
+          }
+        ],
+        "false_alarm_list": []
+      }
+    },
+    {
+      "seed": 102,
+      "rotation": -47.0,
+      "scale": 1.03,
+      "flip": true,
+      "classical": {
+        "n_truth": 30,
+        "found": 29,
+        "classified": 28,
+        "false_alarms": 0,
+        "recall": 0.9666666666666667,
+        "class_accuracy": 0.9333333333333333,
+        "precision": 1.0,
+        "per_class": {
+          "particle": {
+            "n": 6,
+            "found": 6,
+            "classified": 6
+          },
+          "short": {
+            "n": 6,
+            "found": 6,
+            "classified": 6
+          },
+          "open": {
+            "n": 6,
+            "found": 6,
+            "classified": 6
+          },
+          "void": {
+            "n": 6,
+            "found": 6,
+            "classified": 6
+          },
+          "protrusion": {
+            "n": 6,
+            "found": 5,
+            "classified": 4
+          }
+        },
+        "misses": [
+          {
+            "class": "protrusion",
+            "x_um": 553.0147646150705,
+            "y_um": 1080.0,
+            "size_um": 7.766990291262136,
+            "near": [
+              "short"
+            ]
+          },
+          {
+            "class": "protrusion",
+            "x_um": 730.8800909987095,
+            "y_um": 1120.0,
+            "size_um": 7.766990291262136,
+            "near": []
+          }
+        ],
+        "false_alarm_list": []
+      },
+      "unet": {
+        "n_truth": 30,
+        "found": 30,
+        "classified": 29,
+        "false_alarms": 0,
+        "recall": 1.0,
+        "class_accuracy": 0.9666666666666667,
+        "precision": 1.0,
+        "per_class": {
+          "particle": {
+            "n": 6,
+            "found": 6,
+            "classified": 6
+          },
+          "short": {
+            "n": 6,
+            "found": 6,
+            "classified": 6
+          },
+          "open": {
+            "n": 6,
+            "found": 6,
+            "classified": 6
+          },
+          "void": {
+            "n": 6,
+            "found": 6,
+            "classified": 6
+          },
+          "protrusion": {
+            "n": 6,
+            "found": 6,
+            "classified": 5
+          }
+        },
+        "misses": [
+          {
+            "class": "protrusion",
+            "x_um": 553.0147646150705,
+            "y_um": 1080.0,
+            "size_um": 7.766990291262136,
+            "near": [
+              "short"
+            ]
+          }
+        ],
+        "false_alarm_list": []
+      }
+    },
+    {
+      "seed": 103,
+      "rotation": 91.5,
+      "scale": 0.97,
+      "flip": false,
+      "classical": {
+        "n_truth": 30,
+        "found": 26,
+        "classified": 26,
+        "false_alarms": 0,
+        "recall": 0.8666666666666667,
+        "class_accuracy": 0.8666666666666667,
+        "precision": 1.0,
+        "per_class": {
+          "particle": {
+            "n": 6,
+            "found": 6,
+            "classified": 6
+          },
+          "short": {
+            "n": 6,
+            "found": 6,
+            "classified": 6
+          },
+          "open": {
+            "n": 6,
+            "found": 6,
+            "classified": 6
+          },
+          "void": {
+            "n": 6,
+            "found": 4,
+            "classified": 4
+          },
+          "protrusion": {
+            "n": 6,
+            "found": 4,
+            "classified": 4
+          }
+        },
+        "misses": [
+          {
+            "class": "protrusion",
+            "x_um": 1073.969245239002,
+            "y_um": 1080.0,
+            "size_um": 10.309278350515465,
+            "near": []
+          },
+          {
+            "class": "void",
+            "x_um": 1345.7142897579142,
+            "y_um": 746.1876416424809,
+            "size_um": 4.123711340206186,
+            "near": []
+          },
+          {
+            "class": "protrusion",
+            "x_um": 1043.0741814865826,
+            "y_um": 1080.0,
+            "size_um": 8.247422680412372,
+            "near": []
+          },
+          {
+            "class": "void",
+            "x_um": 2117.3227023951085,
+            "y_um": 91.82177886375709,
+            "size_um": 6.1855670103092795,
+            "near": []
+          }
+        ],
+        "false_alarm_list": []
+      },
+      "unet": {
+        "n_truth": 30,
+        "found": 30,
+        "classified": 30,
+        "false_alarms": 0,
+        "recall": 1.0,
+        "class_accuracy": 1.0,
+        "precision": 1.0,
+        "per_class": {
+          "particle": {
+            "n": 6,
+            "found": 6,
+            "classified": 6
+          },
+          "short": {
+            "n": 6,
+            "found": 6,
+            "classified": 6
+          },
+          "open": {
+            "n": 6,
+            "found": 6,
+            "classified": 6
+          },
+          "void": {
+            "n": 6,
+            "found": 6,
+            "classified": 6
+          },
+          "protrusion": {
+            "n": 6,
+            "found": 6,
+            "classified": 6
+          }
+        },
+        "misses": [],
+        "false_alarm_list": []
+      }
+    }
+  ]
+}

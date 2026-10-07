@@ -35,6 +35,40 @@ class ClassicalSegmenter:
         self.adaptive_block_px = adaptive_block_px | 1
         self.morph_px = morph_px
         self.edge_exclusion_px = edge_exclusion_px
+        self.global_stats: tuple[tuple[float, float], tuple[float, float]] | None = None
+        """((metal mean, std), (substrate mean, std)) over the whole image; fallback for tiles
+        that contain only one class, where a per-tile threshold is ill-posed."""
+
+    def fit_global(self, source, design, warp, region, n_tiles: int = 24, tile_px: int = 512, seed: int = 0) -> None:
+        """Estimate image-wide class statistics from tiles sampled over `region` (level-0 px)."""
+        import numpy as _np
+
+        from chipscan.geometry import BBox as _BBox
+
+        rng = _np.random.default_rng(seed)
+        ms, ss = [], []
+        for _ in range(n_tiles * 3):
+            if len(ms) >= n_tiles:
+                break
+            x = int(rng.uniform(region.x0, max(region.x1 - tile_px, region.x0)))
+            y = int(rng.uniform(region.y0, max(region.y1 - tile_px, region.y0)))
+            bb = _BBox(x, y, x + tile_px, y + tile_px)
+            img = source.read_region(x, y, x + tile_px, y + tile_px, level=0).astype(_np.float32) / 255.0
+            prior = design.render(warp.local_affine(bb), bb).astype(bool)
+            t = self._prep(img)
+            if not self.metal_bright:
+                t = 1.0 - t
+            edge = prior ^ ndi.binary_erosion(prior, iterations=1)
+            far = ~ndi.binary_dilation(edge, iterations=self.edge_exclusion_px)
+            m, sub = t[prior & far], t[(~prior) & far]
+            if m.size > 200 and sub.size > 200:
+                ms.append((float(_np.median(m)), float(m.std())))
+                ss.append((float(_np.median(sub)), float(sub.std())))
+        if ms:
+            self.global_stats = (
+                (float(_np.median([a for a, _ in ms])), float(_np.median([b for _, b in ms]))),
+                (float(_np.median([a for a, _ in ss])), float(_np.median([b for _, b in ss]))),
+            )
 
     def _prep(self, t: np.ndarray) -> np.ndarray:
         if self.blur_sigma > 0:
@@ -46,23 +80,37 @@ class ClassicalSegmenter:
         if not self.metal_bright:
             t = 1.0 - t
         if self.method == "otsu":
-            thr = threshold_otsu(t) if t.std() > 1e-4 else 0.5
-            prob = _soft(t, thr, max(t.std(), 1e-3) * 0.5)
+            if self.global_stats is not None and (prior is None or prior.min() == prior.max()):
+                (gm, gsm), (gs, gss) = self.global_stats
+                prob = _soft(t, 0.5 * (gm + gs), max(0.5 * (gsm + gss), 1e-3))
+            else:
+                thr = threshold_otsu(t) if t.std() > 1e-4 else 0.5
+                prob = _soft(t, thr, max(t.std(), 1e-3) * 0.5)
         elif self.method == "adaptive":
             local = cv2.blur(t, (self.adaptive_block_px, self.adaptive_block_px))
             prob = _soft(t - local, 0.0, max(t.std(), 1e-3) * 0.5)
         elif self.method == "design_prior":
             if prior is None or prior.min() == prior.max():
-                thr = threshold_otsu(t) if t.std() > 1e-4 else 0.5
-                prob = _soft(t, thr, max(t.std(), 1e-3) * 0.5)
+                # single-class tile (bare substrate, or solid ground plane): a per-tile threshold is
+                # ill-posed, so use the image-wide class statistics when we have them
+                if self.global_stats is not None:
+                    (gm, gsm), (gs, gss) = self.global_stats
+                    prob = _soft(t, 0.5 * (gm + gs), max(0.5 * (gsm + gss), 1e-3))
+                else:
+                    thr = threshold_otsu(t) if t.std() > 1e-4 else 0.5
+                    prob = _soft(t, thr, max(t.std(), 1e-3) * 0.5)
             else:
                 p = prior.astype(bool)
                 edge = p ^ ndi.binary_erosion(p, iterations=1)
                 far = ~ndi.binary_dilation(edge, iterations=self.edge_exclusion_px)
                 m, s = t[p & far], t[(~p) & far]
                 if m.size < 10 or s.size < 10:
-                    thr = threshold_otsu(t) if t.std() > 1e-4 else 0.5
-                    prob = _soft(t, thr, max(t.std(), 1e-3) * 0.5)
+                    if self.global_stats is not None:
+                        (gm, gsm), (gs, gss) = self.global_stats
+                        prob = _soft(t, 0.5 * (gm + gs), max(0.5 * (gsm + gss), 1e-3))
+                    else:
+                        thr = threshold_otsu(t) if t.std() > 1e-4 else 0.5
+                        prob = _soft(t, thr, max(t.std(), 1e-3) * 0.5)
                 else:
                     mu1, mu0 = float(m.mean()), float(s.mean())
                     sd = max(0.5 * (float(m.std()) + float(s.std())), 1e-3)

@@ -100,6 +100,18 @@ uv run chipscan train configs/train_example.yaml                     # scenes li
 uv run python scripts/benchmark_synthetic.py --model models/unet_synthetic.pt   # classical vs UNet
 ```
 
+On three held-out synthetic chips (different seeds, tilts of 2 to 92 degrees, scale
+errors, one mirrored; 90 injected defects), after 12 epochs on one synthetic scene:
+
+| method | recall | class accuracy | false alarms |
+| --- | --- | --- | --- |
+| classical (design-prior threshold, 2 px tolerance band) | 82/90 (91%) | 81/90 (90%) | 1 |
+| UNet detector (injection-trained, no hand labels) | 90/90 (100%) | 88/90 (98%) | 0 |
+
+The classical misses are protrusions and voids below the tolerance-band floor; the
+detector has no such floor. Its two "errors" are 10 um protrusions that physically
+reach the centre conductor, which it correctly calls shorts.
+
 Then set `segmentation.method: unet` and `model_path` in a pipeline YAML. A 3-output
 model is used as a detector (its defect channels replace the tolerance-band diff); a
 1-output model is used as a plain segmenter. Add every registered reticle you have as a

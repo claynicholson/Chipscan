@@ -107,6 +107,8 @@ def segment_and_compare(
     if region is None:
         raise RuntimeError("design does not overlap image")
     tiles = make_tiles(src.shape, cfg.segmentation.tile_px, cfg.segmentation.margin_px, region)
+    if hasattr(seg, "fit_global"):
+        seg.fit_global(src, des, warp, region)
     classifier = classifier or RuleClassifier(tolerance_px=cfg.detection.tolerance_px)
     defects: list[Defect] = []
     with Progress() as prog:
