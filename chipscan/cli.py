@@ -146,6 +146,7 @@ def detect(
     pixel_size: float | None = typer.Option(None, help="Microns per pixel (for areas in um2)"),
     threshold: float = 0.5,
     min_area_px: int = 6,
+    merge_px: int = typer.Option(8, help="Group blobs closer than this into one anomaly"),
     tile: int = 512,
     device: str = "auto",
     suppress_repeats: bool = typer.Option(True, help="Drop candidates reproduced one repetition pitch away (designed structure)"),
@@ -172,7 +173,7 @@ def detect(
     store = g.create_array("0", shape=src.shape, chunks=(1024, 1024), dtype="uint8")
     det = AnomalyDetector(model, device)
     det.run(src, tile_px=tile, store=store)
-    recs = anomalies_from_map(store, threshold, min_area_px, pixel_size or src.pixel_size_um)
+    recs = anomalies_from_map(store, threshold, min_area_px, pixel_size or src.pixel_size_um, merge_px=merge_px)
     n_raw = len(recs)
     if suppress_repeats and recs:
         pitches = estimate_pitches(src)

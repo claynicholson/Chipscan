@@ -43,9 +43,11 @@ class AnomalyInjection:
     p_types: dict[str, float] = field(
         # "paste" (foreign structure) teaches the model that unfamiliar structure is anomalous, which hurts
         # generalisation to new designs; keep it rare and prefer local, defect-like perturbations
-        default_factory=lambda: {"paste": 0.05, "bar": 0.25, "blob": 0.25, "scratch": 0.12, "shade": 0.1, "blur": 0.05, "erase": 0.18}
+        default_factory=lambda: {"paste": 0.05, "bar": 0.2, "blob": 0.2, "speck": 0.2, "scratch": 0.1, "shade": 0.08, "blur": 0.04, "erase": 0.13}
     )
     edge_softness_px: float = 0.8
+    speck_min_contrast: float = 0.035
+    """Faint dust: specks are 1-8 px with contrast down to this (in [0,1]); other types stay >= 0.12."""
     p_text: float = 0.35
     """Probability of drawing unlabelled text (chip labels, markings) on a tile: text is normal, not an anomaly."""
 
@@ -197,10 +199,16 @@ class AnomalyTiles(Dataset):
         for _ in range(n):
             kind = str(self.rng.choice(kinds, p=probs))
             cx, cy = float(self.rng.uniform(4, w - 4)), float(self.rng.uniform(4, h - 4))
-            m = self._shape(h, w, cx, cy, "bar" if kind == "bar" else ("scratch" if kind == "scratch" else "blob"))
-            if m.sum() < 3:
+            if kind == "speck":
+                m = np.zeros((h, w), np.uint8)
+                r = float(self.rng.uniform(1.0, 8.0))
+                cv2.ellipse(m, (int(cx), int(cy)), (max(1, int(r)), max(1, int(r * self.rng.uniform(0.6, 1.0)))), float(self.rng.uniform(0, 180)), 0, 360, 1, -1)
+            else:
+                m = self._shape(h, w, cx, cy, "bar" if kind == "bar" else ("scratch" if kind == "scratch" else "blob"))
+            if m.sum() < 2:
                 continue
-            soft = cv2.GaussianBlur(m.astype(np.float32), (0, 0), self.inj.edge_softness_px) if self.inj.edge_softness_px > 0 else m.astype(np.float32)
+            sig = self.inj.edge_softness_px * (float(self.rng.uniform(1.0, 2.5)) if kind == "speck" else 1.0)
+            soft = cv2.GaussianBlur(m.astype(np.float32), (0, 0), sig) if sig > 0 else m.astype(np.float32)
             soft = np.clip(soft * 1.3, 0, 1)
             # local background tone under the anomaly, so painted tones always contrast with it
             local = float(np.median(img[m > 0])) if (m > 0).any() else float(img.mean())
@@ -216,10 +224,10 @@ class AnomalyTiles(Dataset):
                 # match the local tone so it is the structure, not the brightness, that is foreign
                 patch = np.clip(patch - patch.mean() + img.mean() + self.rng.normal(0, 0.05), 0, 1)
                 tex = patch
-            elif kind in ("bar", "blob", "scratch"):
-                # contrast of at least 0.12 against the local tone, in a random direction, bounded to the image's
-                # own dynamic range when possible (looks like the other material) but never invisible
-                delta = float(self.rng.uniform(0.12, 0.45))
+            elif kind in ("bar", "blob", "scratch", "speck"):
+                # contrast against the local tone in a random direction: specks may be faint (dust, haze),
+                # everything else at least 0.12 so it is never invisible
+                delta = float(self.rng.uniform(self.inj.speck_min_contrast, 0.2)) if kind == "speck" else float(self.rng.uniform(0.12, 0.45))
                 if self.rng.uniform() < 0.5:
                     tone = local + delta if local + delta <= 1.0 else local - delta
                 else:
@@ -236,8 +244,9 @@ class AnomalyTiles(Dataset):
                 if abs(tone - local) < 0.08:  # erasing with the same tone is invisible: use the other extreme
                     tone = hi if abs(hi - local) > abs(lo - local) else lo
                 tex = np.full_like(img, tone) + self.rng.normal(0, 0.015, img.shape).astype(np.float32)
-            changed = np.abs(tex - img) > 0.04
-            if (changed & (m > 0)).sum() < 3:
+            vis = 0.025 if kind == "speck" else 0.04
+            changed = np.abs(tex - img) > vis
+            if (changed & (m > 0)).sum() < 2:
                 continue  # invisible change; do not label it
             out = out * (1 - soft) + tex * soft
             label = (m > 0) & changed  # label only what is actually visible
@@ -329,15 +338,21 @@ class AnomalyDetector:
         return full
 
 
-def anomalies_from_map(amap, threshold: float = 0.5, min_area_px: int = 6, pixel_size_um: float | None = None, chunk: int = 4096) -> list[dict]:
-    """Connected components of a (possibly zarr-backed) anomaly map -> outline records in px (and um if known)."""
+def anomalies_from_map(
+    amap, threshold: float = 0.5, min_area_px: int = 6, pixel_size_um: float | None = None, chunk: int = 4096, merge_px: int = 8
+) -> list[dict]:
+    """Connected components of a (possibly zarr-backed) anomaly map -> outline records in px (and um if known).
+
+    Pieces of one physical anomaly (a scrub mark, a fiber) often come out as several blobs;
+    blobs within `merge_px` of each other are grouped into one record (areas/outlines stay exact).
+    """
     from scipy import ndimage as ndi
 
     H, W = amap.shape
     thr = int(round(threshold * 255))
     recs: list[dict] = []
     nid = 0
-    pad = 32
+    pad = 32 + merge_px
     for y0 in range(0, H, chunk):
         for x0 in range(0, W, chunk):
             ya, xa = max(y0 - pad, 0), max(x0 - pad, 0)
@@ -346,7 +361,12 @@ def anomalies_from_map(amap, threshold: float = 0.5, min_area_px: int = 6, pixel
             m = blk > thr
             if not m.any():
                 continue
-            lab, n = ndi.label(m)
+            if merge_px > 0:
+                grown = ndi.binary_dilation(m, iterations=merge_px)
+                lab_g, n = ndi.label(grown)
+                lab = lab_g * m  # group id per original pixel; dilation only decides grouping
+            else:
+                lab, n = ndi.label(m)
             objs = ndi.find_objects(lab)
             for i, sl in enumerate(objs, start=1):
                 if sl is None:
