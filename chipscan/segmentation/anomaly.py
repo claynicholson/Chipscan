@@ -46,6 +46,8 @@ class AnomalyInjection:
         default_factory=lambda: {"paste": 0.05, "bar": 0.25, "blob": 0.25, "scratch": 0.12, "shade": 0.1, "blur": 0.05, "erase": 0.18}
     )
     edge_softness_px: float = 0.8
+    p_text: float = 0.35
+    """Probability of drawing unlabelled text (chip labels, markings) on a tile: text is normal, not an anomaly."""
 
 
 def _perlin_like(h: int, w: int, rng: np.random.Generator, scale: int = 16) -> np.ndarray:
@@ -140,9 +142,45 @@ class AnomalyTiles(Dataset):
                 cv2.circle(m, (int(cx), int(cy)), max(2, rr // 2), 1, -1)
         return m
 
+    _FONTS = (cv2.FONT_HERSHEY_SIMPLEX, cv2.FONT_HERSHEY_DUPLEX, cv2.FONT_HERSHEY_TRIPLEX, cv2.FONT_HERSHEY_PLAIN, cv2.FONT_HERSHEY_COMPLEX)
+    _CHARS = "ABCDEFGHJKLMNPQRSTUVWXYZ0123456789-"
+
+    def draw_text(self, img: np.ndarray) -> np.ndarray:
+        """Etched/printed labels are designed structure: draw some, unlabelled, so the model treats text as normal."""
+        h, w = img.shape
+        out = img.copy()
+        n = int(self.rng.integers(1, 4))
+        for _ in range(n):
+            txt = "".join(self.rng.choice(list(self._CHARS), size=int(self.rng.integers(1, 9))))
+            font = int(self.rng.choice(self._FONTS))
+            scale = float(self.rng.uniform(0.5, 7.0))  # real chip labels can be well over 100 px tall
+            thick = int(self.rng.integers(1, 3 + int(scale)))
+            (tw, th), _ = cv2.getTextSize(txt, font, scale, thick)
+            layer8 = np.zeros((h, w), np.uint8)
+            lo_x = -tw * 0.3
+            x = int(self.rng.uniform(lo_x, max(lo_x + 1.0, w - tw * 0.7)))
+            y = int(self.rng.uniform(min(th, h - 1), h))
+            cv2.putText(layer8, txt, (x, y), font, scale, 255, thick, cv2.LINE_AA)
+            layer = layer8.astype(np.float32) / 255.0
+            k = int(self.rng.integers(0, 4))
+            if k:
+                layer = np.rot90(layer, k)
+                if layer.shape != (h, w):
+                    layer = cv2.resize(layer, (w, h))
+            if self.rng.uniform() < 0.5:  # hollow / outlined letters, as etched labels often look
+                er = cv2.erode((layer > 0.5).astype(np.uint8), np.ones((3, 3), np.uint8))
+                layer = layer * (1 - er) if er.any() else layer
+            local = float(np.median(img[layer > 0.5])) if (layer > 0.5).any() else float(img.mean())
+            delta = float(self.rng.uniform(0.08, 0.35)) * (1 if self.rng.uniform() < 0.5 else -1)
+            tone = float(np.clip(local + delta, 0, 1))
+            out = out * (1 - layer) + tone * layer
+        return np.clip(out, 0, 1).astype(np.float32)
+
     def inject(self, img: np.ndarray, scene_idx: int) -> tuple[np.ndarray, np.ndarray]:
         h, w = img.shape
         target = np.zeros((h, w), np.float32)
+        if self.rng.uniform() < self.inj.p_text:
+            img = self.draw_text(img)
         out = img.copy()
         if self.rng.uniform() > self.inj.p_anomaly_tile:
             return out, target

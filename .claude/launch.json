@@ -4,7 +4,7 @@
     {
       "name": "viewer",
       "runtimeExecutable": "uv",
-      "runtimeArgs": ["run", "chipscan", "serve", "outputs/anomaly_C1_v3/AFT5_07_C1.anomalies.json", "configs/aft5/AFT5_01_A2_pcm.yaml", "data/nft1_chip/config.yaml", "data/synthetic/config.yaml", "--port", "8000"],
+      "runtimeArgs": ["run", "chipscan", "serve", "outputs/anomaly_C1_v4/AFT5_07_C1.anomalies.json", "configs/aft5/AFT5_01_A2_pcm.yaml", "data/nft1_chip/config.yaml", "data/synthetic/config.yaml", "--port", "8000"],
       "port": 8000
     }
   ]
