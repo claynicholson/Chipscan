@@ -67,6 +67,10 @@ a UNet learns to outline them. Trained on two chip designs, a PCB panel and synt
 chips, validated on a reticle it never saw: IoU 0.87, recall 0.94, precision 0.92 on
 injected anomalies.
 
+Labels and markings (letters, digits, unit strings) are designed structure too, so training
+tiles also receive random *unlabelled* synthetic text in many fonts, sizes and orientations;
+without it the chip labels were the dominant false alarms on real reticles.
+
 A learned detector alone cannot tell unfamiliar *designed* structure from a defect, so
 `detect` adds **repeat suppression**: it estimates the image's repetition pitches by
 autocorrelation (it finds the chip pitch on a reticle by itself) and drops every
