@@ -1,0 +1,31 @@
+name: AFT5_01_A2_pcm
+image:
+  path: ../../data/pyramids/AFT5_01_A2.zarr
+  pixel_size_um: 0.814
+  channel: gray
+design:
+  path: "../../data/designs/NFT1_26_1_wafer(1) - Copy.gds"
+  cell: RETICLE_A
+  layers: ["5/0"]
+  polarity: drawn_is_metal
+  metal_bright: true
+  region_um: [-20603, -20530, -14600, 20530]   # left column: 5x20 chip + PCM test blocks (valid in this GDS revision)
+registration:
+  transform_path: ../../outputs/AFT5_01_A2_pcm/AFT5_01_A2_pcm.registration.json
+  fine:
+    enabled: true
+    level_pixel_size_um: 1.7
+    tile_px: 512
+    grid: 12
+    max_shift_px: 64
+segmentation:
+  method: classical
+  classical_method: design_prior
+  tile_px: 1024
+  margin_px: 64
+detection:
+  tolerance_px: 2
+  min_area_um2: 6.0
+export:
+  out_dir: ../../outputs/AFT5_01_A2_pcm
+  overlay_max_px: 3000

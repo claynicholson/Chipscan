@@ -81,9 +81,23 @@ def fine_register(
     overlap = coarse.apply_bbox(design.bbox).intersection(source.bbox_px)
     if overlap is None:
         raise RuntimeError("design does not overlap the image after coarse registration")
-    boxes = grid_sample_boxes(overlap, cfg.grid, cfg.tile_px * s)
     to_lvl = Affine2D.scaling(1.0 / s)
     a_lvl = to_lvl.compose(coarse)  # world -> level px
+    # candidate tiles: a denser grid, ranked by design edge content (blank ground plane carries no
+    # registration information), keeping the best `grid*grid` spread over the image
+    cand = grid_sample_boxes(overlap, cfg.grid * 3, cfg.tile_px * s)
+    lo = max(0, source.num_levels - 1)
+    ls = 2**lo
+    a_lo = Affine2D.scaling(1.0 / ls).compose(coarse)
+    scored = []
+    for b in cand:
+        x0, y0, x1, y1 = b.to_int()
+        m = design.render(a_lo, BBox(x0 // ls, y0 // ls, max(x0 // ls + 1, x1 // ls), max(y0 // ls + 1, y1 // ls)), supersample=1)
+        frac = float(m.mean()) if m.size else 0.0
+        scored.append((min(frac, 1 - frac), b))
+    scored.sort(key=lambda t: -t[0])
+    want = cfg.grid * cfg.grid
+    boxes = [b for sc, b in scored[:want] if sc > 0.002] or [b for _, b in scored[:want]]
 
     centers, dsts, confs, recs = [], [], [], []
     for b in boxes:

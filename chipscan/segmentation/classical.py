@@ -27,6 +27,7 @@ class ClassicalSegmenter:
         adaptive_block_px: int = 101,
         morph_px: int = 0,
         edge_exclusion_px: int = 3,
+        metal_percentile: float = 15.0,
     ):
         self.name = f"classical:{method}"
         self.method = method
@@ -35,6 +36,7 @@ class ClassicalSegmenter:
         self.adaptive_block_px = adaptive_block_px | 1
         self.morph_px = morph_px
         self.edge_exclusion_px = edge_exclusion_px
+        self.metal_percentile = metal_percentile
         self.global_stats: tuple[tuple[float, float], tuple[float, float]] | None = None
         """((metal mean, std), (substrate mean, std)) over the whole image; fallback for tiles
         that contain only one class, where a per-tile threshold is ill-posed."""
@@ -62,8 +64,8 @@ class ClassicalSegmenter:
             far = ~ndi.binary_dilation(edge, iterations=self.edge_exclusion_px)
             m, sub = t[prior & far], t[(~prior) & far]
             if m.size > 200 and sub.size > 200:
-                ms.append((float(_np.median(m)), float(m.std())))
-                ss.append((float(_np.median(sub)), float(sub.std())))
+                ms.append((float(_np.percentile(m, self.metal_percentile)), float(m.std())))
+                ss.append((float(_np.percentile(sub, 100 - self.metal_percentile)), float(sub.std())))
         if ms:
             self.global_stats = (
                 (float(_np.median([a for a, _ in ms])), float(_np.median([b for _, b in ms]))),
@@ -112,12 +114,19 @@ class ClassicalSegmenter:
                         thr = threshold_otsu(t) if t.std() > 1e-4 else 0.5
                         prob = _soft(t, thr, max(t.std(), 1e-3) * 0.5)
                 else:
-                    mu1, mu0 = float(m.mean()), float(s.mean())
-                    sd = max(0.5 * (float(m.std()) + float(s.std())), 1e-3)
-                    if mu1 < mu0:  # polarity in config was wrong for this tile; trust the data
-                        mu1, mu0 = mu0, mu1
-                        t = 1.0 - t
-                        mu1, mu0 = 1.0 - mu1, 1.0 - mu0
+                    # metal may contain several stacks (base metal, pads, junction layers) with different
+                    # brightness: anchor on the darkest substantial metal mode (low percentile), and on
+                    # the brightest substantial substrate mode, so the threshold sits between them
+                    mu1 = float(np.percentile(m, self.metal_percentile))
+                    mu0 = float(np.percentile(s, 100 - self.metal_percentile))
+                    sd = max(0.5 * (float(np.std(m[m <= np.percentile(m, 50)])) + float(s.std())), 1e-3)
+                    if mu1 <= mu0:  # classes overlap or polarity wrong: fall back to the global statistics/Otsu
+                        if self.global_stats is not None:
+                            (gm, gsm), (gs, gss) = self.global_stats
+                            mu1, mu0, sd = gm, gs, max(0.5 * (gsm + gss), 1e-3)
+                        else:
+                            thr = threshold_otsu(t) if t.std() > 1e-4 else 0.5
+                            mu1, mu0 = thr + 0.01, thr - 0.01
                     thr = 0.5 * (mu1 + mu0)
                     prob = _soft(t, thr, sd)
         else:

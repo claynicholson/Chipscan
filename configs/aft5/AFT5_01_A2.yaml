@@ -1,0 +1,40 @@
+name: AFT5_01_A2
+image:
+  path: ../../data/pyramids/AFT5_01_A2.zarr
+  pixel_size_um: 0.93
+  channel: gray
+design:
+  path: "../../data/designs/NFT1_26_1_wafer(1) - Copy.gds"
+  cell: RETICLE_A
+  layers: ["5/0"]
+  polarity: drawn_is_metal
+  metal_bright: true
+registration:
+  coarse:
+    target_pixel_size_um: 8.0
+    allow_flip: true
+    allow_scale: true
+    rotation_candidates_deg: [0, 90, 180, 270]
+    rotation_search_deg: 3.0
+    rotation_step_deg: 0.5
+    max_dim_px: 2048
+  fine:
+    enabled: true
+    level_pixel_size_um: 2.0
+    tile_px: 512
+    grid: 10
+    max_shift_px: 64
+segmentation:
+  method: classical
+  classical_method: design_prior
+  tile_px: 1024
+  margin_px: 64
+detection:
+  tolerance_px: 2
+  min_area_um2: 6.0
+stage:
+  enabled: true
+  origin_stage_um: [79088.86, 160838.24]
+export:
+  out_dir: ../../outputs/AFT5_01_A2
+  overlay_max_px: 3000
