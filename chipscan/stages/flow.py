@@ -56,7 +56,7 @@ class ScanSpec:
     component_z: float = 6.0
     min_area_px: int = 4
     layout_model: str = str(ROOT / "models" / "layout_v1.pt")
-    speck_model: str = str(ROOT / "models" / "speck_v1.pt")
+    speck_model: str = str(ROOT / "models" / "speck_v2.pt")
     trace_model: str = str(ROOT / "models" / "trace_v1.pt")
     device: str = "auto"
 
@@ -137,7 +137,7 @@ def extract_findings(run_dir: Path, spec: ScanSpec, source: ImageSource | None =
     out: list[dict] = []
     for group, thr, merge in (("speck", spec.speck_threshold, 6), ("trace", spec.trace_threshold, 8)):
         amap = zarr.open_group(str(run_dir / f"{group}.zarr"), mode="r")["0"]
-        recs = anomalies_from_map(amap, thr, spec.min_area_px, px, merge_px=merge)
+        recs = anomalies_from_map(amap, thr, spec.min_area_px, px, merge_px=merge, solid=True)
         n0 = len(recs)
         recs, on_text = suppress_text(recs, cls)
         if group == "speck" and recs:
@@ -151,6 +151,8 @@ def extract_findings(run_dir: Path, spec: ScanSpec, source: ImageSource | None =
                 kept += k
             info["speck_repeats_dropped"] = len(recs) - len(kept)
             recs = kept
+        if group == "speck" and recs:
+            recs = [_grow_on_pads(source, d, px) for d in recs]
         for d in recs:
             d["group"] = group
             d["kind"] = group
@@ -173,6 +175,56 @@ def extract_findings(run_dir: Path, spec: ScanSpec, source: ImageSource | None =
     out = [d for d in out if id(d) not in drop]
     info["dedup_dropped"] = len(drop)
     return out, info
+
+
+def _grow_on_pads(source: ImageSource, d: dict, px: float, pad: int = 160) -> dict:
+    """A detection on a pad is usually one corner of a larger probe mark: take the whole dark mark.
+
+    Uses the same rule that labelled real pad dirt for training (anything dark inside a pad's
+    interior), restricted to the marks this detection actually touches."""
+    import cv2
+    from scipy import ndimage as ndi
+
+    from chipscan.stages.nets import real_dirt
+
+    b = d["bbox_px"]
+    x0, y0 = int(b["x0"]) - pad, int(b["y0"]) - pad
+    x1, y1 = int(b["x1"]) + pad, int(b["y1"]) + pad
+    win = source.read_region(x0, y0, x1, y1).astype(np.float32) / 255.0
+    dirt, _ = real_dirt(win)
+    if not dirt.any():
+        return d
+    own = np.zeros(win.shape, np.uint8)
+    polys = [np.rint(np.asarray(q) - [x0, y0]).astype(np.int32) for q in d.get("polygons_px") or [] if len(q) >= 3]
+    if polys:
+        cv2.fillPoly(own, polys, 1)
+    own = own.astype(bool)
+    lab, n = ndi.label(dirt)
+    touch = np.unique(lab[ndi.binary_dilation(own, iterations=2) & (lab > 0)])
+    if not len(touch):
+        return d
+    grown = own | np.isin(lab, touch)
+    grown = ndi.binary_fill_holes(ndi.binary_closing(grown, iterations=3))
+    if grown.sum() <= own.sum() * 1.05:
+        return d
+    cs, _ = cv2.findContours(grown.astype(np.uint8), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    ys, xs = np.nonzero(grown)
+    bb = {"x0": float(xs.min() + x0), "y0": float(ys.min() + y0), "x1": float(xs.max() + 1 + x0), "y1": float(ys.max() + 1 + y0)}
+    area = int(grown.sum())
+    cx, cy = float(xs.mean() + x0), float(ys.mean() + y0)
+    d.update(
+        {
+            "polygons_px": [(c.reshape(-1, 2).astype(float) + [x0 + 0.5, y0 + 0.5]).round(2).tolist() for c in cs if len(c) >= 3],
+            "bbox_px": bb,
+            "area_px": area,
+            "area_um2": area * px * px,
+            "centroid_px": [cx, cy],
+            "centroid_um": [cx * px, cy * px],
+            "bbox_um": {k: v * px for k, v in bb.items()},
+            "grown_on_pad": True,
+        }
+    )
+    return d
 
 
 # ----------------------------------------------------------------------------- the flow

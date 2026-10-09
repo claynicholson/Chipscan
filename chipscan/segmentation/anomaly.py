@@ -339,7 +339,7 @@ class AnomalyDetector:
 
 
 def anomalies_from_map(
-    amap, threshold: float = 0.5, min_area_px: int = 6, pixel_size_um: float | None = None, chunk: int = 4096, merge_px: int = 8
+    amap, threshold: float = 0.5, min_area_px: int = 6, pixel_size_um: float | None = None, chunk: int = 4096, merge_px: int = 8, solid: bool = False
 ) -> list[dict]:
     """Connected components of a (possibly zarr-backed) anomaly map -> outline records in px (and um if known).
 
@@ -372,6 +372,12 @@ def anomalies_from_map(
                 if sl is None:
                     continue
                 comp = lab[sl] == i
+                if solid and merge_px > 0:
+                    # one physical object -> one filled outline: bridge the gaps between its pieces, fill holes
+                    pad_ = merge_px + 1
+                    cp = np.pad(comp, pad_)
+                    cp = ndi.binary_fill_holes(ndi.binary_closing(cp, structure=np.ones((3, 3), bool), iterations=merge_px))
+                    comp = cp[pad_:-pad_, pad_:-pad_]
                 area = int(comp.sum())
                 if area < min_area_px:
                     continue
