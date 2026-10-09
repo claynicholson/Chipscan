@@ -1,62 +1,198 @@
 <!doctype html>
-<html lang="en">
+<html lang="en" class="sl-theme-dark">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>chipscan viewer</title>
-<link rel="stylesheet" href="/static/style.css">
+<title>chipscan</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@shoelace-style/shoelace@2.15.1/cdn/themes/dark.css">
+<script type="module" src="https://cdn.jsdelivr.net/npm/@shoelace-style/shoelace@2.15.1/cdn/shoelace-autoloader.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/openseadragon/4.1.1/openseadragon.min.js"></script>
+<link rel="stylesheet" href="/static/style.css">
 </head>
 <body>
-<header>
-  <div class="brand">chipscan</div>
-  <select id="run"></select>
-  <div id="runinfo" class="muted"></div>
-  <div class="spacer"></div>
-  <label class="toggle"><input type="checkbox" id="layer-design" checked> design edges</label>
-  <label class="toggle"><input type="checkbox" id="layer-pred"> prediction heatmap</label>
-  <label class="toggle"><input type="checkbox" id="layer-defects" checked> defect outlines</label>
-  <span id="sens" class="sens hidden">
-    <label title="Anomaly probability threshold: lower = more sensitive">thr <input type="range" id="thr" min="0.05" max="0.95" step="0.05" value="0.5"><span id="thr-val">0.50</span></label>
-    <label title="Minimum anomaly size in pixels">min px <input type="number" id="minpx" min="1" max="500" value="6" style="width:56px"></label>
-    <label class="toggle"><input type="checkbox" id="specks" checked> faint specks</label>
-    <label class="toggle"><input type="checkbox" id="die2die" checked> die-to-die</label>
-    <button id="btn-apply">apply</button>
-    <button id="btn-learn" title="Train a classifier on your real/false-alarm reviews and rank all candidates">learn from reviews</button>
-  </span>
-  <button id="btn-measure" title="Draw a line to measure metal/gap widths (m)">measure</button>
-  <button id="btn-positions" title="PRECiV position list of selected defects">re-image selected</button>
-  <a id="btn-export" href="#" download>export CSV</a>
-  <input id="reviewer" placeholder="your name" title="recorded with each review">
-</header>
+<div class="app">
 
-<main>
-  <aside>
-    <div class="filters">
-      <input id="q" placeholder="filter: class, status, >area, id">
-      <select id="sort">
-        <option value="severity">sort: severity</option>
-        <option value="area">sort: area</option>
-        <option value="score">sort: score</option>
-        <option value="id">sort: id</option>
-        <option value="p_real">sort: learned confidence</option>
-        <option value="uncertain">sort: most uncertain first</option>
-      </select>
+  <!-- ============================================================ app bar -->
+  <header class="appbar">
+    <div class="brand">
+      <svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true"><rect x="5" y="5" width="14" height="14" rx="2.5" fill="none" stroke="currentColor" stroke-width="1.8"/><rect x="9" y="9" width="6" height="6" rx="1" fill="currentColor"/><path d="M9 2v3M15 2v3M9 19v3M15 19v3M2 9h3M2 15h3M19 9h3M19 15h3" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>
+      <span>chipscan</span>
     </div>
-    <div id="stats" class="stats"></div>
-    <div id="list" class="list"></div>
-    <div class="help">
-      <b>keys</b> ↑/↓ or j/k next · <b>r</b> real · <b>f</b> false alarm · <b>u</b> unsure · <b>x</b> select for re-image ·
-      <b>1</b> short <b>2</b> open <b>3</b> particle <b>4</b> protrusion <b>5</b> notch <b>6</b> void · <b>m</b> measure · <b>esc</b> cancel · filter <b>p&gt;0.5</b> after learning
+    <sl-divider vertical></sl-divider>
+    <sl-select id="run" size="small" hoist class="run-select" placeholder="Select a run"></sl-select>
+    <div id="runinfo" class="runinfo"></div>
+    <div class="appbar-actions">
+      <sl-tooltip content="Measure a line cut (M)">
+        <sl-button id="btn-measure" size="small" variant="default"><sl-icon slot="prefix" name="rulers"></sl-icon>Measure</sl-button>
+      </sl-tooltip>
+      <sl-tooltip content="Download a PRECiV position list for the defects you selected with X">
+        <sl-button id="btn-positions" size="small" variant="default"><sl-icon slot="prefix" name="crosshair"></sl-icon>Re-image<sl-badge id="sel-count" pill variant="primary" class="hidden">0</sl-badge></sl-button>
+      </sl-tooltip>
+      <sl-button id="btn-export" size="small" variant="default" href="#" download><sl-icon slot="prefix" name="download"></sl-icon>Export CSV</sl-button>
+      <sl-divider vertical></sl-divider>
+      <sl-input id="reviewer" size="small" placeholder="Reviewer" class="reviewer" clearable><sl-icon slot="prefix" name="person-circle"></sl-icon></sl-input>
+      <sl-tooltip content="Keyboard shortcuts (?)">
+        <sl-icon-button id="btn-help" name="keyboard" label="Keyboard shortcuts"></sl-icon-button>
+      </sl-tooltip>
+    </div>
+  </header>
+
+  <!-- ============================================================ candidate list -->
+  <aside class="pane pane-left">
+    <div class="pane-section">
+      <div class="stat-grid">
+        <div class="stat"><div class="stat-label">Candidates</div><div class="stat-value" id="st-n">–</div></div>
+        <div class="stat"><div class="stat-label">Reviewed</div><div class="stat-value" id="st-rev">–</div></div>
+        <div class="stat"><div class="stat-label">Precision</div><div class="stat-value" id="st-prec">–</div></div>
+      </div>
+      <sl-progress-bar id="st-progress" value="0" class="review-progress"></sl-progress-bar>
+      <div id="class-chips" class="chips"></div>
+    </div>
+    <div class="pane-section filters">
+      <sl-input id="q" size="small" placeholder="Filter candidates" clearable title="class, status, >area µm², p>0.5, #id, selected"><sl-icon slot="prefix" name="search"></sl-icon></sl-input>
+      <sl-select id="sort" size="small" value="severity" hoist>
+        <sl-icon slot="prefix" name="sort-down"></sl-icon>
+        <sl-option value="severity">Severity</sl-option>
+        <sl-option value="area">Area</sl-option>
+        <sl-option value="score">Detector score</sl-option>
+        <sl-option value="id">ID</sl-option>
+        <sl-divider></sl-divider>
+        <sl-option value="p_real">Learned confidence</sl-option>
+        <sl-option value="uncertain">Most uncertain first</sl-option>
+      </sl-select>
+    </div>
+    <div class="list-head"><span id="list-count">0 shown</span><span class="kbd-hint"><kbd>J</kbd><kbd>K</kbd> navigate</span></div>
+    <div id="list" class="list" tabindex="-1"><div id="list-spacer" class="list-spacer"></div></div>
+  </aside>
+
+  <!-- ============================================================ image -->
+  <section class="stage">
+    <div id="viewer-wrap" class="viewer-wrap">
+      <div id="viewer" class="viewer"></div>
+      <canvas id="overlay" class="overlay"></canvas>
+    </div>
+    <footer class="statusbar">
+      <div class="status-group">
+        <sl-icon-button name="dash-lg" label="Zoom out" id="zoom-out"></sl-icon-button>
+        <span id="zoom-val" class="mono zoom-val">–</span>
+        <sl-icon-button name="plus-lg" label="Zoom in" id="zoom-in"></sl-icon-button>
+        <sl-tooltip content="Fit whole image"><sl-icon-button name="arrows-fullscreen" label="Fit" id="zoom-fit"></sl-icon-button></sl-tooltip>
+      </div>
+      <sl-divider vertical></sl-divider>
+      <span id="readout" class="mono readout">Move over the image</span>
+      <span id="mode" class="mode hidden"><sl-icon name="rulers"></sl-icon>Measure: click two points · Esc to cancel</span>
+    </footer>
+  </section>
+
+  <!-- ============================================================ inspector -->
+  <aside class="pane pane-right">
+    <div class="inspector">
+
+      <section class="card">
+        <div class="card-head"><span>Overview</span></div>
+        <div id="navigator-host" class="navigator-host"></div>
+      </section>
+
+      <section class="card" id="card-defect">
+        <div class="card-head">
+          <span>Selected candidate</span>
+          <div class="card-head-actions">
+            <sl-tooltip content="Previous (K)"><sl-icon-button name="chevron-up" label="Previous" id="prev"></sl-icon-button></sl-tooltip>
+            <sl-tooltip content="Next (J)"><sl-icon-button name="chevron-down" label="Next" id="next"></sl-icon-button></sl-tooltip>
+          </div>
+        </div>
+        <div id="defect-empty" class="empty">
+          <sl-icon name="cursor"></sl-icon>
+          <div>Pick a candidate from the list or click an outline on the image.</div>
+        </div>
+        <div id="defect-body" class="hidden">
+          <div class="defect-hero">
+            <img id="d-thumb" alt="Crop of the selected candidate">
+            <div class="defect-title">
+              <span id="d-class" class="cls-tag"></span>
+              <span id="d-id" class="mono muted"></span>
+            </div>
+          </div>
+          <dl id="d-props" class="props"></dl>
+          <div class="review-label">Verdict</div>
+          <div class="verdict">
+            <sl-button size="small" data-status="real" class="v-btn"><sl-icon slot="prefix" name="check-lg"></sl-icon>Real <kbd>R</kbd></sl-button>
+            <sl-button size="small" data-status="false_alarm" class="v-btn"><sl-icon slot="prefix" name="x-lg"></sl-icon>False <kbd>F</kbd></sl-button>
+            <sl-button size="small" data-status="unsure" class="v-btn"><sl-icon slot="prefix" name="question-lg"></sl-icon>Unsure <kbd>U</kbd></sl-button>
+          </div>
+          <div class="row-2">
+            <sl-select id="d-cls" size="small" placeholder="Reclassify…" hoist>
+              <sl-option value="short">Short <kbd slot="suffix">1</kbd></sl-option>
+              <sl-option value="open">Open <kbd slot="suffix">2</kbd></sl-option>
+              <sl-option value="particle">Particle <kbd slot="suffix">3</kbd></sl-option>
+              <sl-option value="protrusion">Protrusion <kbd slot="suffix">4</kbd></sl-option>
+              <sl-option value="notch">Notch <kbd slot="suffix">5</kbd></sl-option>
+              <sl-option value="void">Void <kbd slot="suffix">6</kbd></sl-option>
+            </sl-select>
+            <sl-tooltip content="Add to re-image list (X)"><sl-button id="d-select" size="small"><sl-icon slot="prefix" name="crosshair"></sl-icon>Re-image</sl-button></sl-tooltip>
+          </div>
+        </div>
+      </section>
+
+      <section class="card hidden" id="card-measure">
+        <div class="card-head"><span>Measurement</span><sl-icon-button name="x-lg" label="Close" id="measure-close"></sl-icon-button></div>
+        <div id="measure-out" class="measure-out"></div>
+      </section>
+
+      <section class="card">
+        <div class="card-head"><span>Layers</span></div>
+        <div class="switches">
+          <sl-switch id="layer-defects" size="small" checked>Candidate outlines</sl-switch>
+          <sl-switch id="layer-design" size="small" checked>Design edges</sl-switch>
+          <sl-switch id="layer-pred" size="small">Prediction heatmap</sl-switch>
+        </div>
+      </section>
+
+      <section class="card hidden" id="sens">
+        <div class="card-head"><span>Detection</span></div>
+        <sl-range id="thr" min="0.05" max="0.95" step="0.05" value="0.5" label="Anomaly threshold" help-text="Lower finds more, with more false alarms."></sl-range>
+        <sl-input id="minpx" type="number" size="small" min="1" max="500" value="6" label="Minimum size (px)"></sl-input>
+        <div class="switches">
+          <sl-switch id="specks" size="small" checked>Faint specks</sl-switch>
+          <sl-switch id="die2die" size="small" checked>Die-to-die comparison</sl-switch>
+        </div>
+        <sl-button id="btn-apply" size="small" variant="primary" class="full"><sl-icon slot="prefix" name="arrow-repeat"></sl-icon>Apply</sl-button>
+        <sl-divider></sl-divider>
+        <div class="learn">
+          <div class="learn-head"><span>Learn from reviews</span></div>
+          <p class="hint">Trains a classifier on your Real / False verdicts and ranks every candidate by confidence. Needs 5 of each.</p>
+          <div class="learn-meter">
+            <div><span>Real <b id="lm-real-n">0</b>/5</span><sl-progress-bar id="lm-real" value="0"></sl-progress-bar></div>
+            <div><span>False <b id="lm-false-n">0</b>/5</span><sl-progress-bar id="lm-false" value="0"></sl-progress-bar></div>
+          </div>
+          <sl-button id="btn-learn" size="small" variant="neutral" class="full"><sl-icon slot="prefix" name="stars"></sl-icon>Train and rank</sl-button>
+          <div id="learn-result" class="hint hidden"></div>
+        </div>
+      </section>
+
     </div>
   </aside>
-  <section id="viewer-wrap">
-    <div id="viewer"></div>
-    <canvas id="overlay"></canvas>
-    <div id="readout" class="readout"></div>
-    <div id="measure-out" class="measure-out hidden"></div>
-  </section>
-</main>
+</div>
+
+<sl-dialog id="help" label="Keyboard shortcuts" class="help-dialog">
+  <div class="shortcuts">
+    <div><kbd>J</kbd> <kbd>↓</kbd></div><div>Next candidate</div>
+    <div><kbd>K</kbd> <kbd>↑</kbd></div><div>Previous candidate</div>
+    <div><kbd>R</kbd></div><div>Mark real</div>
+    <div><kbd>F</kbd></div><div>Mark false alarm</div>
+    <div><kbd>U</kbd></div><div>Mark unsure</div>
+    <div><kbd>1</kbd>–<kbd>6</kbd></div><div>Reclassify: short, open, particle, protrusion, notch, void</div>
+    <div><kbd>X</kbd></div><div>Add to / remove from re-image list</div>
+    <div><kbd>M</kbd></div><div>Measure a line cut</div>
+    <div><kbd>Esc</kbd></div><div>Cancel measurement</div>
+    <div><kbd>?</kbd></div><div>Show this panel</div>
+  </div>
+  <p class="hint">Filter tokens: a class or status name, <code>&gt;2</code> / <code>&lt;2</code> for area in µm², <code>p&gt;0.5</code> after learning, <code>#123</code> for an ID, <code>selected</code>.</p>
+</sl-dialog>
+
 <script src="/static/app.js"></script>
 </body>
 </html>

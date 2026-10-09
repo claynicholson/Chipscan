@@ -449,8 +449,8 @@ def create_app(config_paths: list[Path], db_path: Path | None = None) -> FastAPI
         return Response(r.pred_tile(level, x, y), media_type="image/png", headers={"Cache-Control": "max-age=86400"})
 
     @app.get("/api/runs/{name}/thumb/{defect_id}.jpg")
-    def thumb(name: str, defect_id: int):
-        return Response(get_run(name).thumb(defect_id), media_type="image/jpeg", headers={"Cache-Control": "max-age=86400"})
+    def thumb(name: str, defect_id: int, size: int = Query(96, ge=32, le=512)):
+        return Response(get_run(name).thumb(defect_id, size), media_type="image/jpeg", headers={"Cache-Control": "max-age=86400"})
 
     @app.get("/api/runs/{name}/measure")
     def measure(name: str, x0: float, y0: float, x1: float, y1: float):
