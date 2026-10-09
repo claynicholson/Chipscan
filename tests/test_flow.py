@@ -13,7 +13,7 @@ from chipscan.io.readers import ArraySource
 from chipscan.segmentation.unet import UNet
 from chipscan.stages.components import component_errors, find_instances
 from chipscan.stages.flow import ScanSpec, run_scan
-from chipscan.stages.straighten import estimate_tile_grid, estimate_tilt, straighten
+from chipscan.stages.straighten import estimate_tile_grid, estimate_tilt
 
 
 def _chip(h=1600, w=2000, tilt=0.4, seed=0):
