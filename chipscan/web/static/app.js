@@ -749,8 +749,10 @@
     $("reviewer").addEventListener("sl-change", e => store.set("chipscan.reviewer", e.target.value));
   }
 
+  const START_HASH = location.hash;
   const TAGS = ["sl-select", "sl-option", "sl-input", "sl-button", "sl-switch", "sl-range", "sl-dialog", "sl-drawer", "sl-progress-bar", "sl-icon-button", "sl-badge", "sl-details"];
   Promise.all(TAGS.map(t => customElements.whenDefined(t)))
     .then(() => { wire(); pollJobs(true); return loadRuns(); })
+    .then(() => { if (START_HASH === "#add") openAdd(); else if (START_HASH === "#jobs") $("jobs-drawer").show(); })
     .catch(e => { document.body.innerHTML = `<pre style="padding:20px;color:#f26b6b">${esc(e.stack || e)}</pre>`; });
 })();

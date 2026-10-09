@@ -59,7 +59,7 @@ def _blend(img: np.ndarray, mask: np.ndarray, tex: np.ndarray, soft: float) -> t
 def paint_speck(img: np.ndarray, rng: np.random.Generator, tones: Tones) -> tuple[np.ndarray, np.ndarray]:
     """Dust, particles, fibres, residue and probe scrub marks: irregular, own tone, soft edges."""
     h, w = img.shape
-    kind = rng.choice(["dot", "particle", "particle", "fiber", "residue", "scrub"], p=[0.25, 0.3, 0.15, 0.1, 0.1, 0.1])
+    kind = rng.choice(["dot", "particle", "big", "fiber", "residue", "scrub"], p=[0.22, 0.28, 0.1, 0.14, 0.1, 0.16])
     m = np.zeros((h, w), np.uint8)
     cx, cy = rng.uniform(6, w - 6), rng.uniform(6, h - 6)
     if kind == "scrub" and tones.bright_mask.sum() > 200 and rng.uniform() < 0.8:
@@ -69,8 +69,8 @@ def paint_speck(img: np.ndarray, rng: np.random.Generator, tones: Tones) -> tupl
     if kind == "dot":
         r = rng.uniform(0.7, 3.0)
         cv2.ellipse(m, (int(cx), int(cy)), (max(1, int(round(r))), max(1, int(round(r * rng.uniform(0.6, 1))))), rng.uniform(0, 180), 0, 360, 1, -1)
-    elif kind in ("particle", "residue"):
-        r = rng.uniform(3, 14) if kind == "particle" else rng.uniform(8, 30)
+    elif kind in ("particle", "residue", "big"):
+        r = {"particle": rng.uniform(3, 14), "residue": rng.uniform(8, 30), "big": rng.uniform(14, 40)}[kind]
         rr = int(np.ceil(r))
         x0, y0 = int(cx) - rr, int(cy) - rr
         f = smooth_field(2 * rr + 1, 2 * rr + 1, rng, scale=max(3, rr // 2))
@@ -87,16 +87,21 @@ def paint_speck(img: np.ndarray, rng: np.random.Generator, tones: Tones) -> tupl
         for _ in range(n):
             ang += rng.normal(0, 0.5)
             pts.append(pts[-1] + rng.uniform(6, 30) * np.array([np.cos(ang), np.sin(ang)]))
-        cv2.polylines(m, [np.array(pts, np.int32)], False, 1, int(rng.integers(1, 4)), cv2.LINE_AA)
-    else:  # scrub: a cluster of short parallel streaks
+        width = int(rng.integers(1, 4)) if rng.uniform() < 0.6 else int(rng.integers(4, 14))  # hairs and thick fibres
+        cv2.polylines(m, [np.array(pts, np.int32)], False, 1, width, cv2.LINE_AA)
+    else:  # scrub: probe-needle marks - a dense cluster of short streaks plus gouged blobs, 15-60 px
         ang = rng.uniform(0, np.pi)
         d = np.array([np.cos(ang), np.sin(ang)])
         nrm = np.array([-d[1], d[0]])
-        for _ in range(int(rng.integers(2, 7))):
-            o = np.array([cx, cy]) + nrm * rng.normal(0, 3) + d * rng.normal(0, 3)
-            ln = rng.uniform(5, 25)
+        spread = rng.uniform(3, 12)
+        for _ in range(int(rng.integers(4, 14))):
+            o = np.array([cx, cy]) + nrm * rng.normal(0, spread) + d * rng.normal(0, spread)
+            ln = rng.uniform(6, 40)
             a, b = o - d * ln / 2, o + d * ln / 2
-            cv2.line(m, tuple(int(v) for v in a), tuple(int(v) for v in b), 1, int(rng.integers(1, 3)))
+            cv2.line(m, tuple(int(v) for v in a), tuple(int(v) for v in b), 1, int(rng.integers(1, 4)))
+        for _ in range(int(rng.integers(0, 4))):
+            o = np.array([cx, cy]) + rng.normal(0, spread, 2)
+            cv2.ellipse(m, (int(o[0]), int(o[1])), (int(rng.integers(2, 7)), int(rng.integers(2, 5))), float(np.degrees(ang)), 0, 360, 1, -1)
     if m.sum() < 1:
         return img, np.zeros_like(img, bool)
     local = float(np.median(img[m > 0]))

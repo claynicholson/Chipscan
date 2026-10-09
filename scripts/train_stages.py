@@ -31,6 +31,8 @@ def main() -> None:
     ap.add_argument("--version", default="v1")
     ap.add_argument("--init", default=None, help="fine-tune from models/<which>_<init>.pt")
     ap.add_argument("--lr", type=float, default=2e-3)
+    ap.add_argument("--init-path", default=None, help="fine-tune from this checkpoint (any task with the same output size)")
+    ap.add_argument("--pos-weight", type=float, default=3.0)
     a = ap.parse_args()
     scenes = [PyramidSource(ROOT / "data/pyramids" / f"{n}.zarr") for n in TRAIN]
     val = [PyramidSource(ROOT / "data/pyramids" / f"{n}.zarr") for n in VAL]
@@ -41,8 +43,8 @@ def main() -> None:
         else:
             ds = DefectTiles(scenes, which, n_samples=a.samples, seed=2 if which == "speck" else 3)
             vs = DefectTiles(val, which, n_samples=a.val_samples, seed=98, augment=False)
-        init = ROOT / "models" / f"{which}_{a.init}.pt" if a.init else None
-        train(which, ds, ROOT / "models" / f"{which}_{a.version}.pt", vs, epochs=a.epochs, lr=a.lr, init_from=init, log=lambda s: print(s, flush=True))
+        init = a.init_path or (ROOT / "models" / f"{which}_{a.init}.pt" if a.init else None)
+        train(which, ds, ROOT / "models" / f"{which}_{a.version}.pt", vs, epochs=a.epochs, lr=a.lr, init_from=init, pos_weight=a.pos_weight, log=lambda s: print(s, flush=True))
         print(f"{which} done in {(time.time() - t0) / 60:.1f} min", flush=True)
     sys.exit(0)
 

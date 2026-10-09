@@ -83,8 +83,71 @@ class ScanTiles(Dataset):
         return img.astype(np.float32)
 
 
+def real_dirt(img: np.ndarray, t: Tones | None = None) -> tuple[np.ndarray, np.ndarray]:
+    """Real dirt we can name without a model, and blobs we cannot judge.
+
+    * dirt on pads: a bonding/probe pad is designed as one flat bright area, so anything dark
+      in its interior (probe scrub marks, particles) is dirt.  These are *real* positives: the
+      scans are full of them and a net trained only on painted dirt learns they are normal.
+    * uncertain: small isolated blobs elsewhere (dirt, or a tiny designed feature) - excluded
+      from the loss rather than taught as normal.
+    """
+    t = t or Tones(img)
+    dirt = np.zeros(img.shape, bool)
+    bl, n = ndi.label(t.bright_mask)
+    for i, sl in enumerate(ndi.find_objects(bl), start=1):
+        if sl is None:
+            continue
+        m = bl[sl] == i
+        if m.sum() < 900:
+            continue
+        filled = ndi.binary_fill_holes(m)
+        interior = ndi.binary_erosion(filled, iterations=10)
+        if interior.sum() < 200:
+            continue
+        tone = float(np.median(img[sl][m & interior])) if (m & interior).any() else t.bright
+        d = interior & (img[sl] < tone - max(0.06, 4 * t.noise))
+        if d.sum() >= 6:
+            lab, k = ndi.label(d)
+            keep = np.zeros(k + 1, bool)
+            for j, sj in enumerate(ndi.find_objects(lab), start=1):
+                if sj is None:
+                    continue
+                cj = lab[sj] == j
+                hh, ww = sj[0].stop - sj[0].start, sj[1].stop - sj[1].start
+                # a designed frame/line is long, thin and fills its box; dirt is a compact irregular cluster
+                straight = max(hh, ww) >= 4 * min(hh, ww) and cj.sum() >= 0.6 * hh * ww
+                # stubs of the frame survive the erosion as thin marks on the interior's edge
+                rim = (interior & ~ndi.binary_erosion(interior, iterations=3))[sj] & cj
+                sliver = min(hh, ww) <= 3 and max(hh, ww) >= 8
+                keep[j] = cj.sum() >= 6 and not straight and not sliver and rim.sum() < 0.5 * cj.sum()
+            d = keep[lab]
+            dirt[sl] |= ndi.binary_dilation(d, iterations=1) & filled
+    unsure = np.zeros(img.shape, bool)
+    struct = t.dark_mask | t.bright_mask
+    lab, n = ndi.label(struct)
+    # isolated = alone within 8 px; letters, arrays and devices always have neighbours
+    grp, _ = ndi.label(ndi.binary_dilation(struct, iterations=8))
+    per_grp = np.bincount(np.unique(np.stack([grp[struct], lab[struct]], 1), axis=0)[:, 0]) if struct.any() else np.zeros(1, int)
+    for i, sl in enumerate(ndi.find_objects(lab), start=1):
+        if sl is None:
+            continue
+        m = lab[sl] == i
+        g = grp[sl][m][0]
+        if per_grp[g] > 1:
+            continue
+        area = int(m.sum())
+        hh, ww = sl[0].stop - sl[0].start, sl[1].stop - sl[1].start
+        if 3 <= area <= 400 and max(hh, ww) <= 30 and area / float(hh * ww) < 0.6:  # small and irregular
+            unsure[sl] |= m
+    unsure = ndi.binary_dilation(unsure, iterations=2) & ~dirt
+    return dirt, unsure
+
+
 class DefectTiles(ScanTiles):
-    """Painted tiles; `target` is the category that is labelled ("speck" or "trace")."""
+    """Painted tiles; `target` is the category that is labelled ("speck" or "trace").
+
+    Items are (image, target, weight): weight 0 marks pixels the loss must ignore."""
 
     def __init__(self, scenes, target: str, tile_px: int = 256, n_samples: int = 2000, seed: int = 0, augment: bool = True, p_clean: float = 0.2):
         super().__init__(scenes, tile_px, n_samples, seed, augment)
@@ -94,6 +157,7 @@ class DefectTiles(ScanTiles):
     def __getitem__(self, i):
         img = self.read_tile()
         rng = self.rng
+        dirt, unsure = real_dirt(img) if self.target == "speck" else (None, None)
         clean = rng.uniform() < self.p_clean
         own = 0 if clean else int(rng.integers(1, 4))
         other = int(rng.poisson(1.0))
@@ -105,9 +169,17 @@ class DefectTiles(ScanTiles):
         }
         img, masks = compose(img, rng, counts)
         y = masks[self.target].astype(np.float32)
-        img, y = self.geometric(img, y)
+        w = np.ones_like(y)
+        if dirt is not None:
+            painted_other = np.zeros_like(dirt)
+            for k, m in masks.items():
+                if k != self.target:
+                    painted_other |= m
+            y[dirt & ~painted_other] = 1.0
+            w[unsure & ~painted_other & (y < 0.5)] = 0.0
+        img, y, w = self.geometric(img, y, w)
         img = self.photometric(img)
-        return torch.from_numpy(img)[None], torch.from_numpy(y)[None]
+        return torch.from_numpy(img)[None], torch.from_numpy(y)[None], torch.from_numpy(w)[None]
 
 
 # ----------------------------------------------------------------------------- layout pseudo-labels
@@ -188,9 +260,10 @@ class LayoutTiles(ScanTiles):
 
 
 # ----------------------------------------------------------------------------- training
-def binary_loss(logits, target, pos_weight: float = 3.0):
-    bce = F.binary_cross_entropy_with_logits(logits, target, pos_weight=torch.full_like(target, pos_weight))
-    p = torch.sigmoid(logits)
+def binary_loss(logits, target, pos_weight: float = 3.0, weight=None):
+    w = torch.ones_like(target) if weight is None else weight
+    bce = F.binary_cross_entropy_with_logits(logits, target, pos_weight=torch.full_like(target, pos_weight), weight=w, reduction="sum") / w.sum().clamp(min=1)
+    p = torch.sigmoid(logits) * w
     inter = (p * target).sum(dim=(1, 2, 3))
     dice = 1 - (2 * inter + 1) / (p.sum(dim=(1, 2, 3)) + target.sum(dim=(1, 2, 3)) + 1)
     return bce + dice.mean()
@@ -218,8 +291,11 @@ def evaluate(model, ds, dev, kind: str, batch_size: int = 16) -> dict:
         return {"miou": float(np.mean(iou)), **{f"iou_{n}": float(v) for n, v in zip(LAYOUT_CLASSES, iou, strict=True)}}
     tp = fp = fn = 0.0
     n_clean = n_fa = 0
-    for x, y in DataLoader(ds, batch_size=batch_size):
+    for batch in DataLoader(ds, batch_size=batch_size):
+        x, y = batch[0], batch[1]
         p = torch.sigmoid(model(x.to(dev))).cpu() > 0.5
+        if len(batch) > 2:  # ignored pixels count neither way
+            p = p & (batch[2] > 0.5)
         t = y > 0.5
         tp += float((p & t).sum())
         fp += float((p & ~t).sum())
@@ -244,6 +320,7 @@ def train(
     device: str = "auto",
     init_from: str | Path | None = None,
     log: Callable[[str], None] = print,
+    pos_weight: float = 3.0,
 ) -> list[dict]:
     dev = pick_device(device)
     out_ch = 4 if kind == "layout" else 1
@@ -258,10 +335,11 @@ def train(
     for ep in range(epochs):
         model.train()
         t0, tot, n = time.time(), 0.0, 0
-        for x, y in DataLoader(dataset, batch_size=batch_size, shuffle=True, drop_last=True):
-            x, y = x.to(dev), y.to(dev)
+        for batch in DataLoader(dataset, batch_size=batch_size, shuffle=True, drop_last=True):
+            x, y = batch[0].to(dev), batch[1].to(dev)
+            w = batch[2].to(dev) if len(batch) > 2 else None
             out = model(x)
-            loss = layout_loss(out, y) if kind == "layout" else binary_loss(out, y)
+            loss = layout_loss(out, y) if kind == "layout" else binary_loss(out, y, pos_weight, weight=w)
             opt.zero_grad(set_to_none=True)
             loss.backward()
             torch.nn.utils.clip_grad_norm_(model.parameters(), 2.0)
