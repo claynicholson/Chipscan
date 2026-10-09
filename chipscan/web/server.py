@@ -19,7 +19,7 @@ from pathlib import Path
 import cv2
 import numpy as np
 import zarr
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
@@ -91,6 +91,64 @@ class Run:
     anomaly_run: bool = False
     specks: list[dict] = field(default_factory=list)
     extract_params: dict = field(default_factory=dict)
+    scan_run: bool = False
+    meta: dict = field(default_factory=dict)
+    layout: zarr.Group | None = None
+    heat: zarr.Group | None = None
+
+    @staticmethod
+    def load_scan(run_dir: Path) -> Run:
+        """A run of the full flow (`chipscan add` / the Add-scan dialog): runs/<name>/."""
+        from chipscan.io.readers import PyramidSource
+
+        run_dir = Path(run_dir)
+        meta = json.loads((run_dir / "scan.json").read_text())
+        if meta.get("status") != "done":
+            raise FileNotFoundError(f"{run_dir}: scan not finished ({meta.get('status')})")
+        rec = json.loads((run_dir / "findings.json").read_text())
+        src = PyramidSource(run_dir / "corrected.zarr")
+        px = meta["spec"].get("pixel_size_um") or src.pixel_size_um or 1.0
+        src.pixel_size_um = px
+        run = Run(meta["spec"]["name"], None, src, None, WarpField(Affine2D.scaling(1.0 / px)), px, rec["findings"], None, run_dir, run_dir / "tiles")
+        run.cache_dir.mkdir(parents=True, exist_ok=True)
+        run.scan_run, run.meta = True, meta
+        run.layout = zarr.open_group(str(run_dir / "layout.zarr"), mode="r")
+        run.heat = zarr.open_group(str(run_dir / "heat.zarr"), mode="r")
+        run.pred = run.heat["0"]
+        for d in run.defects:
+            d.setdefault("polygons_px", [])
+        return run
+
+    def rethreshold(self, speck: float, trace: float, min_area_px: int) -> int:
+        from chipscan.stages.flow import ScanSpec, refresh_findings
+
+        with self.lock:
+            sp = {k: v for k, v in self.meta["spec"].items() if k in ScanSpec.__dataclass_fields__}
+            sp.update({"speck_threshold": speck, "trace_threshold": trace, "min_area_px": min_area_px})
+            spec = ScanSpec(**sp)
+            self.defects = refresh_findings(self.out_dir, spec)
+            self.meta = json.loads((self.out_dir / "scan.json").read_text())
+            for d in self.defects:
+                d.setdefault("polygons_px", [])
+        return len(self.defects)
+
+    def layout_tile(self, level: int, x: int, y: int) -> bytes:
+        p = self.cache_dir / f"lay_{level}_{x}_{y}.png"
+        if p.exists():
+            return p.read_bytes()
+        rgba = np.zeros((TILE, TILE, 4), np.uint8)
+        if self.layout is not None and str(level) in self.layout:
+            a = self.layout[str(level)]
+            h, w = a.shape
+            x0, y0 = x * TILE, y * TILE
+            blk = np.asarray(a[y0 : min(y0 + TILE, h), x0 : min(x0 + TILE, w)])
+            hh, ww = blk.shape
+            # BGRA: trace blue, component red, text green
+            for code, col in ((1, (255, 150, 40, 120)), (2, (60, 60, 255, 190)), (3, (80, 220, 80, 160))):
+                rgba[:hh, :ww][blk == code] = col
+        data = _png_bytes(rgba)
+        p.write_bytes(data)
+        return data
 
     def _with_specks(self, recs: list[dict]) -> list[dict]:
         """Append the classical finds (faint specks, die-to-die) that the learned records do not already cover."""
@@ -195,6 +253,8 @@ class Run:
         p = self.cache_dir / f"des_{level}_{x}_{y}.png"
         if p.exists():
             return p.read_bytes()
+        if self.scan_run:
+            return self.layout_tile(level, x, y)
         if self.design is None:
             return _png_bytes(np.zeros((TILE, TILE, 4), np.uint8))
         s = 2**level
@@ -214,7 +274,15 @@ class Run:
         if p.exists():
             return p.read_bytes()
         rgba = np.zeros((TILE, TILE, 4), np.uint8)
-        if self.pred is not None and level <= 4:
+        if self.heat is not None and str(level) in self.heat:
+            a = self.heat[str(level)]
+            h, w = a.shape
+            x0, y0 = x * TILE, y * TILE
+            blk = np.asarray(a[y0 : min(y0 + TILE, h), x0 : min(x0 + TILE, w)])
+            hh, ww = blk.shape
+            rgba[:hh, :ww, :3] = cv2.applyColorMap(blk, cv2.COLORMAP_INFERNO)
+            rgba[:hh, :ww, 3] = np.clip(blk.astype(np.int32) * 2, 0, 200).astype(np.uint8)
+        elif self.pred is not None and level <= 4:
             s = 2**level
             x0, y0 = x * TILE * s, y * TILE * s
             h, w = self.pred.shape
@@ -339,15 +407,110 @@ class ReviewIn(BaseModel):
 
 
 # ---------------------------------------------------------------------------
-def create_app(config_paths: list[Path], db_path: Path | None = None) -> FastAPI:
+class Jobs:
+    """One worker thread runs scans in order; the UI polls progress."""
+
+    def __init__(self, runs_root: Path, on_done):
+        import queue
+
+        self.runs_root = runs_root
+        self.on_done = on_done
+        self.jobs: dict[str, dict] = {}
+        self.q: queue.Queue = queue.Queue()
+        self.lock = threading.Lock()
+        threading.Thread(target=self._worker, daemon=True).start()
+
+    def submit(self, spec) -> dict:
+        from chipscan.stages.flow import STAGES
+
+        jid = f"{spec.name}-{int(time.time())}"
+        job = {
+            "id": jid,
+            "name": spec.name,
+            "status": "queued",
+            "stage": None,
+            "stages": [{"key": k, "label": lab, "status": "pending", "progress": 0.0} for k, lab in STAGES],
+            "created": time.time(),
+            "error": None,
+        }
+        with self.lock:
+            self.jobs[jid] = job
+        self.q.put((jid, spec))
+        return job
+
+    def _progress(self, jid: str):
+        def cb(stage: str, frac: float, msg: str):
+            with self.lock:
+                job = self.jobs[jid]
+                job["stage"] = stage
+                seen = False
+                for st in job["stages"]:
+                    if st["key"] == stage:
+                        st["status"] = "done" if frac >= 1.0 else "running"
+                        st["progress"] = round(float(frac), 3)
+                        seen = True
+                    elif not seen and st["status"] != "done":
+                        st["status"], st["progress"] = "done", 1.0
+
+        return cb
+
+    def _worker(self):
+        from chipscan.stages.flow import run_scan
+
+        while True:
+            jid, spec = self.q.get()
+            with self.lock:
+                self.jobs[jid]["status"] = "running"
+                self.jobs[jid]["started"] = time.time()
+            try:
+                run_dir = run_scan(spec, self.runs_root, self._progress(jid))
+                self.on_done(run_dir)
+                with self.lock:
+                    self.jobs[jid]["status"] = "done"
+            except Exception as e:  # surface the failure in the UI
+                with self.lock:
+                    self.jobs[jid]["status"] = "failed"
+                    self.jobs[jid]["error"] = f"{type(e).__name__}: {e}"
+            with self.lock:
+                self.jobs[jid]["finished"] = time.time()
+
+    def list(self) -> list[dict]:
+        with self.lock:
+            return sorted((json.loads(json.dumps(j)) for j in self.jobs.values()), key=lambda j: -j["created"])
+
+
+def _slug(name: str) -> str:
+    import re
+
+    s = re.sub(r"[^A-Za-z0-9_.-]+", "_", name.strip()).strip("._")
+    return s[:80] or f"scan_{int(time.time())}"
+
+
+def create_app(config_paths: list[Path], db_path: Path | None = None, runs_root: Path | None = None) -> FastAPI:
     runs: dict[str, Run] = {}
     for p in config_paths:
         p = Path(p)
-        r = Run.load_anomaly(p) if p.name.endswith(".anomalies.json") else Run.load(p)
+        if p.is_dir() and (p / "scan.json").exists():
+            r = Run.load_scan(p)
+        else:
+            r = Run.load_anomaly(p) if p.name.endswith(".anomalies.json") else Run.load(p)
         runs[r.name] = r
-    if not runs:
-        raise ValueError("no runs loaded")
-    db = ReviewDB(db_path or (next(iter(runs.values())).out_dir / "reviews.sqlite"))
+    runs_root = Path(runs_root) if runs_root else Path.cwd() / "runs"
+    runs_root.mkdir(parents=True, exist_ok=True)
+    for d in sorted(runs_root.iterdir()):
+        if (d / "scan.json").exists() and d.name not in runs:
+            try:
+                r = Run.load_scan(d)
+                runs[r.name] = r
+            except Exception:
+                pass
+    db = ReviewDB(db_path or ((next(iter(runs.values())).out_dir if runs else runs_root) / "reviews.sqlite"))
+
+    def add_run(run_dir: Path) -> None:
+        r = Run.load_scan(run_dir)
+        runs[r.name] = r
+
+    jobs = Jobs(runs_root, add_run)
     app = FastAPI(title="chipscan viewer")
     app.mount("/static", StaticFiles(directory=str(STATIC)), name="static")
 
@@ -377,11 +540,21 @@ def create_app(config_paths: list[Path], db_path: Path | None = None) -> FastAPI
                     "n_reviewed": sum(1 for v in rv.values() if v["status"] != "unreviewed"),
                     "image": str(r.cfg.image.path.name) if r.cfg else getattr(r.source, "path", Path("?")).name,
                     "design": str(r.cfg.design.path.name) if r.cfg else "none (design-free)",
-                    "segmenter": r.cfg.segmentation.method if r.cfg else "anomaly",
+                    "segmenter": r.cfg.segmentation.method if r.cfg else ("speck + trace + component" if r.scan_run else "anomaly"),
                     "registration": r.warp.affine.to_dict(),
                     "anomaly_run": r.anomaly_run,
                     "extract_params": r.extract_params,
                     "n_specks": len(r.specks),
+                    "scan_run": r.scan_run,
+                    "summary": (r.meta or {}).get("summary"),
+                    "scan": {
+                        "straighten": ((r.meta or {}).get("stages") or {}).get("straighten"),
+                        "layout": ((r.meta or {}).get("stages") or {}).get("layout"),
+                        "components": ((r.meta or {}).get("stages") or {}).get("components"),
+                        "spec": {k: (r.meta or {}).get("spec", {}).get(k) for k in ("speck_threshold", "trace_threshold", "min_area_px", "gds")},
+                    }
+                    if r.scan_run
+                    else None,
                     "fine_rms_px": (r.reg_info.get("fine") or {}).get("rms_residual_px"),
                     "coarse_score": (r.reg_info.get("coarse") or {}).get("score"),
                 }
@@ -395,6 +568,9 @@ def create_app(config_paths: list[Path], db_path: Path | None = None) -> FastAPI
         out = []
         for d in r.defects:
             rec = {k: d.get(k) for k in ("id", "kind", "class", "bbox_px", "bbox_um", "centroid_um", "centroid_px", "area_um2", "area_px", "score", "polygons_px")}
+            for k in ("group", "risk", "risk_level", "d_jj_um", "d_trace_um", "size_um", "on_jj", "on_trace", "z", "ncc", "n_ref", "reference", "risk_factors"):
+                if k in d:
+                    rec[k] = d[k]
             rec["repeat_ncc"] = d.get("repeat_ncc")
             rec["p_real"] = d.get("p_real")
             rec["review"] = rv.get(d["id"], {"status": "unreviewed", "cls": None, "note": None})
@@ -502,7 +678,80 @@ def create_app(config_paths: list[Path], db_path: Path | None = None) -> FastAPI
             s = rv.get(d["id"], {}).get("status", "unreviewed")
             if s in c:
                 c[s] += 1
-        return {"by_class": by_cls, "n": len(r.defects), "n_reviewed": sum(1 for v in rv.values() if v["status"] != "unreviewed")}
+        by_group: dict[str, dict[str, int]] = {}
+        for d in r.defects:
+            g = by_group.setdefault(d.get("group") or d.get("kind", "other"), {"n": 0, "critical": 0, "high": 0, "medium": 0, "low": 0})
+            g["n"] += 1
+            if d.get("risk_level") in g:
+                g[d["risk_level"]] += 1
+        return {"by_class": by_cls, "by_group": by_group, "n": len(r.defects), "n_reviewed": sum(1 for v in rv.values() if v["status"] != "unreviewed")}
+
+    @app.post("/api/runs/{name}/rethreshold")
+    def rethreshold(name: str, speck: float = 0.5, trace: float = 0.5, min_area_px: int = 4):
+        r = get_run(name)
+        if not r.scan_run:
+            raise HTTPException(400, "re-thresholding applies to scans")
+        n = r.rethreshold(speck, trace, min_area_px)
+        return {"ok": True, "n": n, "summary": r.meta.get("summary")}
+
+    @app.post("/api/scans")
+    async def add_scan(request: Request):
+        """Start the flow on an uploaded image (multipart) or an image path on this machine."""
+        from chipscan.stages.flow import ScanSpec
+
+        form = await request.form()
+        name = _slug(str(form.get("name") or ""))
+        image_path = str(form.get("image_path") or "").strip()
+        upload_dir = runs_root / "_uploads" / name
+        f = form.get("image")
+        if f is not None and getattr(f, "filename", None):
+            upload_dir.mkdir(parents=True, exist_ok=True)
+            dest = upload_dir / Path(f.filename).name
+            with open(dest, "wb") as out:
+                while chunk := await f.read(8 << 20):
+                    out.write(chunk)
+            image_path = str(dest)
+            if not str(form.get("name") or "").strip():
+                name = _slug(Path(f.filename).stem)
+        if not image_path:
+            raise HTTPException(400, "give an image file or a path")
+        if not Path(image_path).exists():
+            raise HTTPException(400, f"not found on this computer: {image_path}")
+        if not str(form.get("name") or "").strip() and not getattr(f, "filename", None):
+            name = _slug(Path(image_path).stem)
+        if name in runs or (runs_root / name / "scan.json").exists():
+            name = f"{name}_{time.strftime('%m%d_%H%M%S')}"
+        gds_path = str(form.get("gds_path") or "").strip() or None
+        g = form.get("gds")
+        if g is not None and getattr(g, "filename", None):
+            upload_dir.mkdir(parents=True, exist_ok=True)
+            dest = upload_dir / Path(g.filename).name
+            with open(dest, "wb") as out:
+                while chunk := await g.read(8 << 20):
+                    out.write(chunk)
+            gds_path = str(dest)
+
+        def lst(key: str) -> list[str]:
+            return [t.strip() for t in str(form.get(key) or "").replace(";", ",").split(",") if t.strip()]
+
+        px = str(form.get("pixel_size_um") or "").strip()
+        spec = ScanSpec(
+            name=name,
+            image=image_path,
+            pixel_size_um=float(px) if px else None,
+            gds=gds_path,
+            gds_cell=str(form.get("gds_cell") or "").strip() or None,
+            trace_layers=lst("trace_layers"),
+            component_layers=lst("component_layers"),
+            straighten=str(form.get("straighten") or "true").lower() != "false",
+        )
+        if spec.gds and not (spec.trace_layers or spec.component_layers):
+            raise HTTPException(400, "with a GDS, name its trace and/or component layers (e.g. 1/0 and 92/0)")
+        return jobs.submit(spec)
+
+    @app.get("/api/jobs")
+    def list_jobs():
+        return jobs.list()
 
     @app.get("/api/health")
     def health():
@@ -516,10 +765,10 @@ def _png_bytes(rgba: np.ndarray) -> bytes:
     return buf.tobytes()
 
 
-def serve(config_paths: list[Path], host: str = "127.0.0.1", port: int = 8000, db_path: Path | None = None) -> None:
+def serve(config_paths: list[Path], host: str = "127.0.0.1", port: int = 8000, db_path: Path | None = None, runs_root: Path | None = None) -> None:
     import uvicorn
 
-    app = create_app(config_paths, db_path)
+    app = create_app(config_paths, db_path, runs_root)
     uvicorn.run(app, host=host, port=port, log_level="info")
 
 

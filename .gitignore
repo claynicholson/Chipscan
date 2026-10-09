@@ -31,3 +31,7 @@ outputs/
 # macOS
 .DS_Store
 ._*
+
+# Scans added through the flow (pyramids, maps, findings)
+runs/
+models/*.log

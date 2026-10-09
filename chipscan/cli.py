@@ -13,6 +13,7 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import typer
@@ -279,16 +280,56 @@ def gallery(
 
 @app.command()
 def serve(
-    configs: list[Path] = typer.Argument(..., help="Pipeline YAMLs whose `inspect` outputs exist, and/or <name>.anomalies.json files from `chipscan detect`"),
+    configs: list[Path] = typer.Argument(None, help="Extra runs: pipeline YAMLs, <name>.anomalies.json files, or scan folders"),
     host: str = typer.Option("127.0.0.1", help="Use 0.0.0.0 to serve the lab network"),
     port: int = 8000,
     db: Path | None = typer.Option(None, help="SQLite file for review decisions (default: next to the first run's outputs)"),
+    runs: Path = typer.Option(Path("runs"), help="Folder of scans; new scans added from the website go here too"),
 ):
-    """Web viewer: deep-zoom results with design/heatmap overlays, defect review, metrology, re-image export."""
+    """Web viewer: add scans, deep-zoom results in three groups, review, export."""
     from chipscan.web.server import serve as _serve
 
     console.print(f"open http://{'localhost' if host in ('127.0.0.1', '0.0.0.0') else host}:{port}")
-    _serve(configs, host, port, db)
+    _serve(configs or [], host, port, db, runs)
+
+
+@app.command()
+def add(
+    image: Path = typer.Argument(..., help="Microscope image (PNG/JPG/TIFF/JP2) or an existing .zarr pyramid"),
+    name: str | None = typer.Option(None, help="Scan name (default: the file name)"),
+    pixel_size: float | None = typer.Option(None, help="um per pixel (e.g. 0.814 for the DSX1000 at this zoom)"),
+    gds: Path | None = typer.Option(None, help="Optional design file"),
+    cell: str | None = typer.Option(None, help="GDS cell matching the scan"),
+    trace_layers: str = typer.Option("", help="GDS layers holding traces, e.g. '1/0,5/0'"),
+    component_layers: str = typer.Option("", help="GDS layers holding junctions/components, e.g. '92/0'"),
+    runs: Path = typer.Option(Path("runs"), help="Where scans are stored (the viewer reads this folder)"),
+    no_straighten: bool = typer.Option(False, help="Skip tilt and tiling correction"),
+):
+    """Run the full flow on one image: straighten, fix tiling, find traces/components, detect specks,
+    trace errors and component errors, weight by risk.  The scan then shows up in the viewer."""
+    from rich.progress import BarColumn, Progress, TextColumn, TimeElapsedColumn
+
+    from chipscan.stages.flow import STAGES, ScanSpec, run_scan
+
+    nm = name or image.stem.replace(".zarr", "")
+    spec = ScanSpec(
+        name=nm,
+        image=str(image),
+        pixel_size_um=pixel_size,
+        gds=str(gds) if gds else None,
+        gds_cell=cell,
+        trace_layers=[t for t in trace_layers.split(",") if t],
+        component_layers=[t for t in component_layers.split(",") if t],
+        straighten=not no_straighten,
+    )
+    with Progress(TextColumn("{task.description}"), BarColumn(), TextColumn("{task.percentage:>3.0f}%"), TimeElapsedColumn()) as prog:
+        tasks = {k: prog.add_task(lab, total=1.0) for k, lab in STAGES}
+        run_dir = run_scan(spec, runs, lambda st, f, m: prog.update(tasks[st], completed=f))
+    summ = json.loads((run_dir / "scan.json").read_text())["summary"]
+    for g in ("speck", "trace", "component"):
+        s = summ[g]
+        console.print(f"{g:>10}: {s['n']:6d}  (critical {s['critical']}, high {s['high']}, medium {s['medium']}, low {s['low']})")
+    console.print(f"results in {run_dir}; view with `chipscan serve`")
 
 
 @app.command()

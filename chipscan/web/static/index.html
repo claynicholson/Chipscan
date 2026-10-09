@@ -25,6 +25,11 @@
     <sl-select id="run" size="small" hoist class="run-select" placeholder="Select a run"></sl-select>
     <div id="runinfo" class="runinfo"></div>
     <div class="appbar-actions">
+      <sl-button id="btn-add" size="small" variant="primary"><sl-icon slot="prefix" name="plus-lg"></sl-icon>Add scan</sl-button>
+      <sl-tooltip content="Scans in progress">
+        <sl-button id="btn-jobs" size="small" variant="default" class="jobs-btn"><sl-icon slot="prefix" name="activity"></sl-icon>Jobs<sl-badge id="jobs-count" pill variant="primary" class="hidden" pulse>0</sl-badge></sl-button>
+      </sl-tooltip>
+      <sl-divider vertical></sl-divider>
       <sl-tooltip content="Measure a line cut (M)">
         <sl-button id="btn-measure" size="small" variant="default"><sl-icon slot="prefix" name="rulers"></sl-icon>Measure</sl-button>
       </sl-tooltip>
@@ -50,11 +55,23 @@
       </div>
       <sl-progress-bar id="st-progress" value="0" class="review-progress"></sl-progress-bar>
       <div id="class-chips" class="chips"></div>
+      <div id="group-filter" class="group-filter hidden">
+        <button class="group-card g-speck on" data-group="speck"><span class="g-ico"><sl-icon name="circle-fill"></sl-icon></span><span class="g-name">Specks</span><span class="g-n" id="gn-speck">–</span><span class="g-crit" id="gc-speck"></span></button>
+        <button class="group-card g-trace on" data-group="trace"><span class="g-ico"><sl-icon name="bezier2"></sl-icon></span><span class="g-name">Trace errors</span><span class="g-n" id="gn-trace">–</span><span class="g-crit" id="gc-trace"></span></button>
+        <button class="group-card g-component on" data-group="component"><span class="g-ico"><sl-icon name="cpu"></sl-icon></span><span class="g-name">Component errors</span><span class="g-n" id="gn-component">–</span><span class="g-crit" id="gc-component"></span></button>
+      </div>
+      <div id="risk-filter" class="chips risk-chips hidden">
+        <button class="chip lv-critical on" data-level="critical"><span class="dot"></span>Critical<span class="n" id="lv-critical">0</span></button>
+        <button class="chip lv-high on" data-level="high"><span class="dot"></span>High<span class="n" id="lv-high">0</span></button>
+        <button class="chip lv-medium on" data-level="medium"><span class="dot"></span>Medium<span class="n" id="lv-medium">0</span></button>
+        <button class="chip lv-low on" data-level="low"><span class="dot"></span>Low<span class="n" id="lv-low">0</span></button>
+      </div>
     </div>
     <div class="pane-section filters">
       <sl-input id="q" size="small" placeholder="Filter candidates" clearable title="class, status, >area µm², p>0.5, #id, selected"><sl-icon slot="prefix" name="search"></sl-icon></sl-input>
       <sl-select id="sort" size="small" value="severity" hoist>
         <sl-icon slot="prefix" name="sort-down"></sl-icon>
+        <sl-option value="risk">Risk</sl-option>
         <sl-option value="severity">Severity</sl-option>
         <sl-option value="area">Area</sl-option>
         <sl-option value="score">Detector score</sl-option>
@@ -116,6 +133,7 @@
               <span id="d-id" class="mono muted"></span>
             </div>
           </div>
+          <div id="d-risk" class="risk-block hidden"></div>
           <dl id="d-props" class="props"></dl>
           <div class="review-label">Verdict</div>
           <div class="verdict">
@@ -146,9 +164,21 @@
         <div class="card-head"><span>Layers</span></div>
         <div class="switches">
           <sl-switch id="layer-defects" size="small" checked>Candidate outlines</sl-switch>
-          <sl-switch id="layer-design" size="small" checked>Design edges</sl-switch>
-          <sl-switch id="layer-pred" size="small">Prediction heatmap</sl-switch>
+          <sl-switch id="layer-design" size="small" checked><span id="layer-design-label">Design edges</span></sl-switch>
+          <sl-switch id="layer-pred" size="small"><span id="layer-pred-label">Prediction heatmap</span></sl-switch>
         </div>
+        <div id="layout-legend" class="legend hidden">
+          <span><i class="sw sw-trace"></i>Trace</span><span><i class="sw sw-comp"></i>Component</span><span><i class="sw sw-text"></i>Text</span>
+        </div>
+      </section>
+
+      <section class="card hidden" id="sens-scan">
+        <div class="card-head"><span>Sensitivity</span></div>
+        <sl-range id="thr-speck" min="0.1" max="0.95" step="0.05" value="0.5" label="Speck threshold" help-text="Lower finds fainter dirt."></sl-range>
+        <sl-range id="thr-trace" min="0.1" max="0.95" step="0.05" value="0.5" label="Trace-error threshold"></sl-range>
+        <sl-input id="minpx-scan" type="number" size="small" min="1" max="500" value="4" label="Minimum size (px)"></sl-input>
+        <sl-button id="btn-rethreshold" size="small" variant="primary" class="full"><sl-icon slot="prefix" name="arrow-repeat"></sl-icon>Apply</sl-button>
+        <p class="hint">Component errors come from comparing look-alike components and are not affected.</p>
       </section>
 
       <section class="card hidden" id="sens">
@@ -192,6 +222,56 @@
   </div>
   <p class="hint">Filter tokens: a class or status name, <code>&gt;2</code> / <code>&lt;2</code> for area in µm², <code>p&gt;0.5</code> after learning, <code>#123</code> for an ID, <code>selected</code>.</p>
 </sl-dialog>
+
+<sl-dialog id="add-dialog" label="Add a scan" class="add-dialog">
+  <form id="add-form" class="add-form" autocomplete="off">
+    <label id="drop" class="drop" for="file-input">
+      <input id="file-input" type="file" accept=".png,.jpg,.jpeg,.tif,.tiff,.jp2,.bmp" hidden>
+      <sl-icon name="cloud-arrow-up"></sl-icon>
+      <div class="drop-title">Drop a microscope image here</div>
+      <div class="drop-sub">or click to choose · PNG, JPG, TIFF, JP2 exported from PRECiV</div>
+      <div id="drop-file" class="drop-file hidden"></div>
+    </label>
+    <div class="or"><span>or use a file already on this computer</span></div>
+    <sl-input id="image-path" size="small" placeholder="/Volumes/T9/Wafer Imaging/…/scan.png" clearable help-text="Fastest for very large scans: nothing is uploaded."><sl-icon slot="prefix" name="folder2-open"></sl-icon></sl-input>
+    <div class="form-row">
+      <sl-input id="scan-name" size="small" label="Name" placeholder="from the file name"></sl-input>
+      <sl-input id="scan-px" size="small" type="number" step="0.001" min="0.01" label="Pixel size (µm)" placeholder="0.814"></sl-input>
+    </div>
+    <sl-switch id="scan-straighten" size="small" checked>Straighten and fix tiling</sl-switch>
+    <sl-details summary="Design file (optional)" class="gds-details">
+      <div class="form-col">
+        <label class="mini-drop" for="gds-input"><input id="gds-input" type="file" accept=".gds,.gds2,.gdsii,.oas" hidden><sl-icon name="file-earmark-binary"></sl-icon><span id="gds-name">Choose a GDS file</span></label>
+        <sl-input id="gds-path" size="small" placeholder="or a path on this computer" clearable></sl-input>
+        <sl-input id="gds-cell" size="small" label="Cell" placeholder="e.g. RETICLE_A"></sl-input>
+        <div class="form-row">
+          <sl-input id="gds-trace" size="small" label="Trace layers" placeholder="1/0, 5/0"></sl-input>
+          <sl-input id="gds-comp" size="small" label="Component layers" placeholder="92/0"></sl-input>
+        </div>
+        <p class="hint">Without a design, a model finds traces and components from the image itself.</p>
+      </div>
+    </sl-details>
+    <div id="upload-progress" class="upload-progress hidden">
+      <div class="up-row"><span id="up-label">Uploading…</span><span id="up-pct" class="mono">0%</span></div>
+      <sl-progress-bar id="up-bar" value="0"></sl-progress-bar>
+    </div>
+  </form>
+  <sl-button slot="footer" id="add-cancel" variant="default">Cancel</sl-button>
+  <sl-button slot="footer" id="add-submit" variant="primary"><sl-icon slot="prefix" name="play-fill"></sl-icon>Start inspection</sl-button>
+</sl-dialog>
+
+<sl-drawer id="jobs-drawer" label="Scans" placement="end" class="jobs-drawer">
+  <div id="jobs-list" class="jobs-list"></div>
+</sl-drawer>
+
+<div id="welcome" class="welcome hidden">
+  <div class="welcome-card">
+    <sl-icon name="cpu"></sl-icon>
+    <h2>No scans yet</h2>
+    <p>Add a microscope image to straighten it, find specks, trace errors and component errors, and rank them by risk.</p>
+    <sl-button id="welcome-add" variant="primary"><sl-icon slot="prefix" name="plus-lg"></sl-icon>Add scan</sl-button>
+  </div>
+</div>
 
 <script src="/static/app.js"></script>
 </body>

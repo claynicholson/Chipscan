@@ -1,9 +1,17 @@
-/* chipscan viewer front end: OpenSeadragon canvas + virtualised candidate list + inspector + keyboard review. */
+/* chipscan viewer front end: add scans, track jobs, OpenSeadragon canvas, virtualised findings list,
+   three finding groups with risk levels, inspector, keyboard review. */
 (() => {
   const COLORS = { anomaly: "#ff7a1a", speck: "#8fd3ff", die2die: "#ff4fb8", short: "#ff5c5c", open: "#e15cff", particle: "#ffab4a", protrusion: "#ffe066", notch: "#5ce1ff", void: "#5cb8ff", missing_feature: "#b77cff", extra_feature: "#b77cff", unclassified: "#4fcb7b" };
+  const GROUP_COLORS = { speck: "#38c6f4", trace: "#ffb020", component: "#ff4fd8" };
+  const LEVEL_COLORS = { critical: "#ff4d5e", high: "#ff9f40", medium: "#f2d24e", low: "#7d8796" };
+  const LEVEL_WIDTH = { critical: 2.4, high: 1.9, medium: 1.4, low: 1.1 };
   const SEV = { anomaly: 3, speck: 2, die2die: 4, short: 5, open: 5, missing_feature: 4, extra_feature: 4, particle: 3, protrusion: 2, notch: 2, void: 1, unclassified: 0 };
   const CLASS_KEYS = { "1": "short", "2": "open", "3": "particle", "4": "protrusion", "5": "notch", "6": "void" };
-  const LABEL = { die2die: "die-to-die", false_alarm: "false alarm", missing_feature: "missing feature", extra_feature: "extra feature" };
+  const LABEL = {
+    die2die: "die-to-die", false_alarm: "false alarm", missing_feature: "missing feature", extra_feature: "extra feature",
+    trace: "trace error", component_defect: "component defect", component_deformed: "deformed component", component_missing: "missing component",
+  };
+  const GROUP_LABEL = { speck: "Speck", trace: "Trace error", component: "Component error" };
   const ROW_H = 64;
   const MIN_LABELS = 5;
 
@@ -11,12 +19,16 @@
   const label = (s) => LABEL[s] || String(s).replace(/_/g, " ");
   const esc = (s) => String(s).replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
   const fmt = (v, n = 2) => (v == null || Number.isNaN(v) ? "–" : (+v).toFixed(n));
+  const fmtBytes = (b) => b > 1e9 ? `${(b / 1e9).toFixed(2)} GB` : b > 1e6 ? `${(b / 1e6).toFixed(1)} MB` : `${Math.max(1, Math.round(b / 1e3))} kB`;
   const store = { get: k => { try { return localStorage.getItem(k); } catch (e) { return null; } }, set: (k, v) => { try { localStorage.setItem(k, v); } catch (e) {} } };
+  const colorOf = (d) => (d.group && GROUP_COLORS[d.group]) || COLORS[d.class] || COLORS.unclassified;
 
   let runs = [], run = null, defects = [], view = [], active = -1, selected = new Set();
   let viewer = null, layers = { design: null, pred: null };
   let measuring = false, measurePts = [];
   let rowsFrame = 0;
+  const groupOn = { speck: true, trace: true, component: true };
+  const levelOn = { critical: true, high: true, medium: true, low: true };
 
   // ---------------------------------------------------------------- data
   async function api(path, opts) {
@@ -29,22 +41,29 @@
     return r.json();
   }
 
-  async function notify(message, variant = "primary", icon = "info-circle") {
-    const el = Object.assign(document.createElement("sl-alert"), { variant, closable: true, duration: 6000 });
+  async function notify(message, variant = "primary", icon = "info-circle", action) {
+    const el = Object.assign(document.createElement("sl-alert"), { variant, closable: true, duration: action ? 12000 : 6000 });
     el.innerHTML = `<sl-icon slot="icon" name="${icon}"></sl-icon>${esc(message)}`;
+    if (action) {
+      const b = Object.assign(document.createElement("sl-button"), { size: "small", variant: "text", textContent: action.label });
+      b.style.marginLeft = "8px";
+      b.addEventListener("click", () => { el.hide(); action.run(); });
+      el.append(b);
+    }
     document.body.append(el);
     await customElements.whenDefined("sl-alert");
     el.toast();
   }
   const fail = (e) => notify(e.message || String(e), "danger", "exclamation-octagon");
 
-  async function loadRuns() {
+  async function loadRuns(prefer) {
     runs = await api("/api/runs");
     const sel = $("run");
     sel.innerHTML = runs.map((r, i) => `<sl-option value="r${i}">${esc(r.name)}<span slot="suffix" class="mono muted">${r.n_defects.toLocaleString()}</span></sl-option>`).join("");
-    sel.addEventListener("sl-change", () => openRun(runs[+sel.value.slice(1)].name));
-    const wanted = new URLSearchParams(location.search).get("run");
-    const name = wanted && runs.some(r => r.name === wanted) ? wanted : runs[0].name;
+    $("welcome").classList.toggle("hidden", runs.length > 0);
+    if (!runs.length) return;
+    const wanted = prefer || new URLSearchParams(location.search).get("run");
+    const name = wanted && runs.some(r => r.name === wanted) ? wanted : (run && runs.some(r => r.name === run.name) ? run.name : runs[0].name);
     await sel.updateComplete;
     sel.value = `r${runs.findIndex(r => r.name === name)}`;
     await openRun(name);
@@ -58,18 +77,42 @@
     const meta = [
       `<b>${run.width.toLocaleString()} × ${run.height.toLocaleString()}</b> px`,
       `<b>${fmt(run.pixel_size_um, 3)}</b> µm/px`,
-      esc(run.segmenter || ""),
     ];
-    if (!run.anomaly_run && reg.rotation_deg != null) {
-      meta.push(`rot <b>${fmt(reg.rotation_deg)}°</b> · scale <b>${fmt(reg.scale, 4)}</b>${reg.flipped ? " · mirrored" : ""}`);
-      meta.push(`fine rms <b>${run.fine_rms_px != null ? fmt(run.fine_rms_px) + " px" : "n/a"}</b>`);
+    if (run.scan_run && run.scan) {
+      const st = run.scan.straighten || {};
+      meta.push(`tilt fixed <b>${fmt(st.angle_deg, 3)}°</b>`);
+      meta.push(st.seams ? `tiling fixed <b>${(st.frame_px || []).map(v => Math.round(v)).join(" × ")}</b> px frames` : "no tiling seams");
+      const lay = run.scan.layout || {};
+      meta.push(lay.design_used ? "layout from GDS + model" : "layout from model");
+    } else {
+      meta.push(esc(run.segmenter || ""));
+      if (!run.anomaly_run && reg.rotation_deg != null) {
+        meta.push(`rot <b>${fmt(reg.rotation_deg)}°</b> · scale <b>${fmt(reg.scale, 4)}</b>${reg.flipped ? " · mirrored" : ""}`);
+        meta.push(`fine rms <b>${run.fine_rms_px != null ? fmt(run.fine_rms_px) + " px" : "n/a"}</b>`);
+      }
     }
     $("runinfo").innerHTML = meta.filter(Boolean).map(m => `<span class="meta">${m}</span>`).join("");
     $("btn-export").href = `/api/runs/${encodeURIComponent(name)}/export.csv`;
     defects = await api(`/api/runs/${encodeURIComponent(name)}/defects`);
     selected.clear(); active = -1; updateSelCount();
+    const scan = !!run.scan_run;
     $("sens").classList.toggle("hidden", !run.anomaly_run);
+    $("sens-scan").classList.toggle("hidden", !scan);
+    $("group-filter").classList.toggle("hidden", !scan);
+    $("risk-filter").classList.toggle("hidden", !scan);
+    $("class-chips").classList.toggle("hidden", scan);
+    $("layout-legend").classList.toggle("hidden", !scan);
     $("learn-result").classList.add("hidden");
+    $("layer-design-label").textContent = scan ? "Layout (traces · components)" : "Design edges";
+    $("layer-pred-label").textContent = scan ? "Detector heatmap" : "Prediction heatmap";
+    if (scan) {
+      const sp = (run.scan && run.scan.spec) || {};
+      $("thr-speck").value = +(sp.speck_threshold ?? 0.5); $("thr-trace").value = +(sp.trace_threshold ?? 0.5); $("minpx-scan").value = String(sp.min_area_px ?? 4);
+      $("sort").value = "risk";
+      $("layer-design").checked = false;
+    } else if ($("sort").value === "risk") {
+      $("sort").value = "severity";
+    }
     if (run.anomaly_run && run.extract_params) {
       const p = run.extract_params;
       $("thr").value = +p.threshold; $("minpx").value = String(p.min_area_px);
@@ -97,7 +140,6 @@
 
   function buildViewer() {
     if (viewer) { viewer.destroy(); viewer = null; }
-    // a fresh navigator element each time: OSD styles and owns it
     const host = $("navigator-host"); host.innerHTML = '<div id="navigator"></div>';
     viewer = OpenSeadragon({
       id: "viewer", tileSources: tileSource("tiles", "jpg"),
@@ -123,19 +165,20 @@
     new OpenSeadragon.MouseTracker({ element: viewer.container, moveHandler: onMove }).setTracking(true);
   }
 
-  // use the base image's own converters: with several layered images the viewport-level ones warn
   function baseImage() { return viewer && viewer.world.getItemCount() ? viewer.world.getItemAt(0) : null; }
   function toImage(pt) { const b = baseImage(); return b ? b.viewerElementToImageCoordinates(pt) : viewer.viewport.viewerElementToImageCoordinates(pt); }
   function toScreen(x, y) { const b = baseImage(); const p = new OpenSeadragon.Point(x, y); return b ? b.imageToViewerElementCoordinates(p) : viewer.viewport.imageToViewerElementCoordinates(p); }
   function imageRect(x, y, w, h) { const b = baseImage(); return b ? b.imageToViewportRectangle(x, y, w, h) : viewer.viewport.imageToViewportRectangle(x, y, w, h); }
-  function imageZoom() { // screen px per image px
-    const b = baseImage(); if (!b) return 0;
-    return b.viewportToImageZoom(viewer.viewport.getZoom(true));
-  }
+  function imageZoom() { const b = baseImage(); if (!b) return 0; return b.viewportToImageZoom(viewer.viewport.getZoom(true)); }
 
   function updateZoom() { const z = imageZoom(); $("zoom-val").textContent = z ? (z >= 1 ? `${(z * 100).toFixed(0)}%` : `${(z * 100).toFixed(z < 0.1 ? 1 : 0)}%`) : "–"; }
 
   function safeDraw() { try { drawOverlay(); } catch (e) { console.warn("overlay draw failed", e); } }
+
+  function visible(d) {
+    if (!run || !run.scan_run) return true;
+    return groupOn[d.group] !== false && levelOn[d.risk_level] !== false;
+  }
 
   function drawOverlay() {
     const cv = $("overlay"), wrap = $("viewer-wrap"), dpr = window.devicePixelRatio || 1;
@@ -148,8 +191,10 @@
     const zoom = imageZoom();
     const act = view[active];
     if ($("layer-defects").checked) {
-      for (const d of defects) {
-        const b = d.bbox_px; if (!b || d === act) continue;
+      // low risk first so the important outlines sit on top
+      const order = run.scan_run ? [...defects].sort((a, b) => (a.risk || 0) - (b.risk || 0)) : defects;
+      for (const d of order) {
+        const b = d.bbox_px; if (!b || d === act || !visible(d)) continue;
         const p0 = toScreen(b.x0, b.y0), p1 = toScreen(b.x1, b.y1);
         if (p1.x < -20 || p1.y < -20 || p0.x > W + 20 || p0.y > H + 20) continue;
         strokeDefect(ctx, d, p0, p1, zoom, false);
@@ -158,7 +203,8 @@
     if (act && act.bbox_px) {
       const b = act.bbox_px, p0 = toScreen(b.x0, b.y0), p1 = toScreen(b.x1, b.y1);
       strokeDefect(ctx, act, p0, p1, zoom, true);
-      drawLabel(ctx, `#${act.id} · ${label(act.class)}`, (p0.x + p1.x) / 2, Math.min(p0.y, p1.y) - 10, COLORS[act.class] || COLORS.unclassified, W);
+      const txt = run.scan_run ? `#${act.id} · ${label(act.class)} · risk ${fmt(act.risk, 0)}` : `#${act.id} · ${label(act.class)}`;
+      drawLabel(ctx, txt, (p0.x + p1.x) / 2, Math.min(p0.y, p1.y) - 10, colorOf(act), W);
     }
     if (measurePts.length) {
       ctx.strokeStyle = "#4fcb7b"; ctx.fillStyle = "#4fcb7b"; ctx.lineWidth = 2; ctx.beginPath();
@@ -169,9 +215,10 @@
   }
 
   function strokeDefect(ctx, d, p0, p1, zoom, isActive) {
-    const col = COLORS[d.class] || COLORS.unclassified;
-    ctx.strokeStyle = col; ctx.lineWidth = isActive ? 2.5 : 1.25;
-    ctx.globalAlpha = d.review.status === "false_alarm" ? 0.45 : 1;
+    const col = colorOf(d);
+    const base = run.scan_run ? (LEVEL_WIDTH[d.risk_level] || 1.25) : 1.25;
+    ctx.strokeStyle = col; ctx.lineWidth = isActive ? base + 1.2 : base;
+    ctx.globalAlpha = d.review.status === "false_alarm" ? 0.45 : (run.scan_run && d.risk_level === "low" ? 0.7 : 1);
     ctx.setLineDash(d.review.status === "false_alarm" ? [4, 3] : []);
     if (zoom > 1.5 && d.polygons_px && d.polygons_px.length) {
       for (const poly of d.polygons_px) {
@@ -180,7 +227,7 @@
         ctx.closePath(); ctx.stroke();
       }
     } else if (!isActive && Math.max(p1.x - p0.x, p1.y - p0.y) < 4) {
-      ctx.fillStyle = col; ctx.beginPath(); ctx.arc((p0.x + p1.x) / 2, (p0.y + p1.y) / 2, 2, 0, 6.283); ctx.fill();
+      ctx.fillStyle = col; ctx.beginPath(); ctx.arc((p0.x + p1.x) / 2, (p0.y + p1.y) / 2, run.scan_run && (d.risk_level === "critical" || d.risk_level === "high") ? 3 : 2, 0, 6.283); ctx.fill();
     } else {
       const w = Math.max(p1.x - p0.x, 8), h = Math.max(p1.y - p0.y, 8), cx = (p0.x + p1.x) / 2, cy = (p0.y + p1.y) / 2, pad = isActive ? 6 : 3;
       ctx.strokeRect(cx - w / 2 - pad, cy - h / 2 - pad, w + 2 * pad, h + 2 * pad);
@@ -224,7 +271,6 @@
       }
       return;
     }
-    // click on an outline selects it
     const z = imageZoom() || 1;
     let best = -1, bestD = 1e9;
     view.forEach((d, i) => {
@@ -250,20 +296,22 @@
     return d => toks.every(t => {
       if (t.startsWith("p>")) return d.p_real != null && d.p_real > parseFloat(t.slice(2));
       if (t.startsWith("p<")) return d.p_real != null && d.p_real < parseFloat(t.slice(2));
+      if (t.startsWith("risk>")) return (d.risk || 0) > parseFloat(t.slice(5));
       if (t.startsWith(">")) return d.area_um2 > parseFloat(t.slice(1));
       if (t.startsWith("<")) return d.area_um2 < parseFloat(t.slice(1));
       if (t.startsWith("#")) return String(d.id) === t.slice(1);
-      return d.class.includes(t) || d.kind.includes(t) || d.review.status.includes(t) || (t === "selected" && selected.has(d.id));
+      if (t === "onjj") return !!d.on_jj;
+      return d.class.includes(t) || d.kind.includes(t) || (d.group || "").includes(t) || d.review.status.includes(t) || (t === "selected" && selected.has(d.id));
     });
   }
 
   function refreshList() {
     const f = parseFilter($("q").value || ""), sort = $("sort").value || "severity";
-    view = defects.filter(f);
-    const key = { severity: d => -(SEV[d.class] || 0) * 1e6 - d.area_um2, area: d => -d.area_um2, score: d => -d.score, id: d => d.id,
+    view = defects.filter(d => visible(d) && f(d));
+    const key = { risk: d => -(d.risk || 0), severity: d => -(SEV[d.class] || 0) * 1e6 - d.area_um2, area: d => -d.area_um2, score: d => -d.score, id: d => d.id,
       p_real: d => -(d.p_real == null ? -1 : d.p_real), uncertain: d => (d.review.status !== "unreviewed" ? 1 : 0) + Math.abs((d.p_real == null ? 0.5 : d.p_real) - 0.5) }[sort] || (d => d.id);
     view.sort((a, b) => key(a) - key(b));
-    $("list-count").textContent = view.length === defects.length ? `${view.length.toLocaleString()} candidates` : `${view.length.toLocaleString()} of ${defects.length.toLocaleString()}`;
+    $("list-count").textContent = view.length === defects.length ? `${view.length.toLocaleString()} findings` : `${view.length.toLocaleString()} of ${defects.length.toLocaleString()}`;
     $("list-spacer").style.height = `${Math.max(view.length * ROW_H, 1)}px`;
     renderRows();
     renderChips();
@@ -271,6 +319,21 @@
   }
 
   function rowHtml(d, i) {
+    if (run.scan_run) {
+      const sub = [`${fmt(d.size_um, 1)} µm`];
+      if (d.group !== "component") sub.push(d.on_jj ? "<b>on JJ</b>" : `JJ ${fmt(d.d_jj_um, 0)} µm`);
+      sub.push(d.on_trace ? "on trace" : `trace ${fmt(d.d_trace_um, 1)} µm`);
+      if (d.group === "component" && d.n_ref) sub.push(`vs ${d.n_ref}`);
+      const rv = d.review.status !== "unreviewed" ? `<span class="rv-dot ${d.review.status}" title="${esc(label(d.review.status))}"></span>` : "";
+      return `<div class="row ${i === active ? "active" : ""}" data-i="${i}" style="top:${i * ROW_H}px">
+        <img loading="lazy" src="/api/runs/${encodeURIComponent(run.name)}/thumb/${d.id}.jpg" alt="">
+        <div class="row-main">
+          <div class="row-title g-${esc(d.group)}"><span class="gdot"></span><span class="cls">${esc(label(d.class))}</span><span class="mono">#${d.id}</span>${rv}${selected.has(d.id) ? '<span class="sel" title="in re-image list">●</span>' : ""}</div>
+          <div class="row-sub">${sub.join(" · ")}</div>
+        </div>
+        <span class="risk-pill lv-${d.risk_level}" title="${esc(d.risk_level)} risk">${fmt(d.risk, 0)}</span>
+      </div>`;
+    }
     const kind = d.kind.replace("_metal", "");
     const sub = [`${fmt(d.area_um2, 1)} µm²`, `score ${fmt(d.score)}`];
     if (kind !== d.class) sub.unshift(label(kind));
@@ -290,7 +353,7 @@
   function renderRows() {
     cancelAnimationFrame(rowsFrame);
     const list = $("list"), sp = $("list-spacer");
-    if (!view.length) { sp.innerHTML = `<div class="list-empty">No candidates match this filter.</div>`; return; }
+    if (!view.length) { sp.innerHTML = `<div class="list-empty">No findings match these filters.</div>`; return; }
     const top = list.scrollTop, h = list.clientHeight || 600;
     const i0 = Math.max(0, Math.floor(top / ROW_H) - 6), i1 = Math.min(view.length, Math.ceil((top + h) / ROW_H) + 6);
     let html = "";
@@ -307,6 +370,21 @@
 
   let statsCache = null;
   function renderChips() {
+    if (run && run.scan_run) {
+      // group cards count everything in the group; level chips count within the enabled groups
+      for (const g of ["speck", "trace", "component"]) {
+        const n = defects.filter(d => d.group === g).length;
+        const c = defects.filter(d => d.group === g && (d.risk_level === "critical" || d.risk_level === "high")).length;
+        $(`gn-${g}`).textContent = n.toLocaleString();
+        $(`gc-${g}`).textContent = c ? `${c.toLocaleString()} high+` : "";
+        document.querySelector(`.group-card[data-group="${g}"]`).classList.toggle("on", groupOn[g]);
+      }
+      for (const lv of ["critical", "high", "medium", "low"]) {
+        $(`lv-${lv}`).textContent = defects.filter(d => groupOn[d.group] && d.risk_level === lv).length.toLocaleString();
+        document.querySelector(`#risk-filter .chip[data-level="${lv}"]`).classList.toggle("on", levelOn[lv]);
+      }
+      return;
+    }
     if (!statsCache) return;
     const q = ($("q").value || "").trim().toLowerCase();
     $("class-chips").innerHTML = Object.entries(statsCache.by_class).sort((a, b) => b[1].n - a[1].n).map(([c, v]) =>
@@ -330,6 +408,11 @@
   }
 
   // ---------------------------------------------------------------- inspector
+  function bar(name, v, hint) {
+    const pct = Math.round(100 * Math.max(0, Math.min(1, v || 0)));
+    return `<div class="rf"><span class="rf-name">${name}</span><span class="rf-track"><span class="rf-fill" style="width:${pct}%"></span></span><span class="rf-val mono">${hint}</span></div>`;
+  }
+
   function renderInspector() {
     const d = view[active];
     $("defect-empty").classList.toggle("hidden", !!d);
@@ -338,14 +421,29 @@
     if (!d) return;
     const src = `/api/runs/${encodeURIComponent(run.name)}/thumb/${d.id}.jpg?size=320`;
     if ($("d-thumb").getAttribute("src") !== src) $("d-thumb").src = src;
-    $("d-class").className = `cls-tag c-${d.class}`;
-    $("d-class").innerHTML = `<span class="dot"></span>${esc(label(d.class))}`;
+    $("d-class").className = run.scan_run ? `cls-tag g-${d.group}` : `cls-tag c-${d.class}`;
+    $("d-class").innerHTML = `<span class="${run.scan_run ? "gdot" : "dot"}"></span>${esc(label(d.class))}`;
     $("d-id").textContent = `#${d.id}`;
+    const rb = $("d-risk");
+    if (run.scan_run && d.risk != null) {
+      const f = d.risk_factors || {};
+      rb.innerHTML = `<div class="risk-head"><div class="risk-score lv-${d.risk_level}">${fmt(d.risk, 0)}</div>
+          <div class="risk-meta"><span class="risk-level lv-${d.risk_level}">${esc(d.risk_level)} risk</span><span class="muted">${esc(GROUP_LABEL[d.group] || d.group)}</span></div></div>
+        ${bar("Near a JJ", f.jj, d.on_jj ? "on JJ" : `${fmt(d.d_jj_um, 1)} µm`)}
+        ${bar("Near a trace", f.trace, d.on_trace ? "on trace" : `${fmt(d.d_trace_um, 1)} µm`)}
+        ${bar("Size", f.size, `${fmt(d.size_um, 1)} µm`)}
+        ${bar("Confidence", f.confidence, fmt(f.confidence, 2))}`;
+      rb.classList.remove("hidden");
+    } else rb.classList.add("hidden");
     const props = [
-      ["Detector", label(d.kind.replace("_metal", ""))],
+      ["Detector", run.scan_run ? esc(GROUP_LABEL[d.group] || d.group) : label(d.kind.replace("_metal", ""))],
       ["Area", `${fmt(d.area_um2, 2)} µm² · ${d.area_px != null ? d.area_px.toLocaleString() : "–"} px`],
       ["Score", fmt(d.score)],
     ];
+    if (d.group === "component") {
+      if (d.reference) props.push(["Compared with", `${d.n_ref} ${d.reference === "line" ? "in its line" : "look-alikes"}`]);
+      if (d.ncc != null) props.push(["Match to reference", fmt(d.ncc)]);
+    }
     if (d.z != null) props.push(["Contrast", `${fmt(d.z, 1)} σ`]);
     if (d.n_twins != null) props.push(["Twins compared", d.n_twins]);
     if (d.repeat_ncc != null) props.push(["Twin match", fmt(d.repeat_ncc)]);
@@ -391,12 +489,138 @@
   }
   function updateSelCount() { $("sel-count").textContent = selected.size; $("sel-count").classList.toggle("hidden", !selected.size); }
 
+  // ---------------------------------------------------------------- add scan
+  let pickedFile = null, pickedGds = null;
+
+  function openAdd() {
+    pickedFile = null; pickedGds = null;
+    $("drop-file").classList.add("hidden"); $("drop").classList.remove("has-file");
+    $("gds-name").textContent = "Choose a GDS file";
+    $("upload-progress").classList.add("hidden");
+    $("add-submit").disabled = false; $("add-submit").loading = false;
+    $("add-dialog").show();
+  }
+
+  function setFile(f) {
+    pickedFile = f;
+    $("drop-file").innerHTML = `<sl-icon name="file-earmark-image"></sl-icon><span>${esc(f.name)}</span><span class="muted mono">${fmtBytes(f.size)}</span>`;
+    $("drop-file").classList.remove("hidden");
+    $("drop").classList.add("has-file");
+    if (!$("scan-name").value) $("scan-name").placeholder = f.name.replace(/\.[^.]+$/, "");
+  }
+
+  function submitScan() {
+    const path = ($("image-path").value || "").trim();
+    if (!pickedFile && !path) { notify("Choose an image or give a path on this computer.", "warning", "exclamation-triangle"); return; }
+    const fd = new FormData();
+    if (pickedFile) fd.append("image", pickedFile, pickedFile.name); else fd.append("image_path", path);
+    fd.append("name", $("scan-name").value || "");
+    fd.append("pixel_size_um", $("scan-px").value || "");
+    fd.append("straighten", $("scan-straighten").checked ? "true" : "false");
+    if (pickedGds) fd.append("gds", pickedGds, pickedGds.name);
+    fd.append("gds_path", $("gds-path").value || "");
+    fd.append("gds_cell", $("gds-cell").value || "");
+    fd.append("trace_layers", $("gds-trace").value || "");
+    fd.append("component_layers", $("gds-comp").value || "");
+    const xhr = new XMLHttpRequest();
+    xhr.open("POST", "/api/scans");
+    $("add-submit").loading = true;
+    if (pickedFile) {
+      $("upload-progress").classList.remove("hidden");
+      xhr.upload.onprogress = e => {
+        if (!e.lengthComputable) return;
+        const pct = (100 * e.loaded) / e.total;
+        $("up-bar").value = pct; $("up-pct").textContent = `${pct.toFixed(0)}%`;
+        $("up-label").textContent = pct >= 100 ? "Starting…" : `Uploading ${fmtBytes(e.loaded)} of ${fmtBytes(e.total)}`;
+      };
+    }
+    xhr.onload = () => {
+      $("add-submit").loading = false;
+      if (xhr.status >= 200 && xhr.status < 300) {
+        const job = JSON.parse(xhr.responseText);
+        $("add-dialog").hide();
+        $("image-path").value = ""; $("scan-name").value = "";
+        notify(`Started “${job.name}”. You can keep reviewing while it runs.`, "primary", "activity", { label: "Show progress", run: () => $("jobs-drawer").show() });
+        pollJobs(true);
+      } else {
+        let msg = xhr.responseText; try { msg = JSON.parse(msg).detail; } catch (e) {}
+        $("upload-progress").classList.add("hidden");
+        fail(new Error(msg || `upload failed (${xhr.status})`));
+      }
+    };
+    xhr.onerror = () => { $("add-submit").loading = false; fail(new Error("upload failed: connection lost")); };
+    xhr.send(fd);
+  }
+
+  // ---------------------------------------------------------------- jobs
+  let jobsTimer = 0, lastJobs = {};
+  const STAGE_ICON = { done: "check-circle-fill", running: "arrow-repeat", pending: "circle" };
+
+  function renderJobs(jobs) {
+    const live = jobs.filter(j => j.status === "queued" || j.status === "running").length;
+    $("jobs-count").textContent = live; $("jobs-count").classList.toggle("hidden", !live);
+    if (!jobs.length) { $("jobs-list").innerHTML = `<div class="empty"><sl-icon name="inbox"></sl-icon><div>No scans started in this session.</div></div>`; return; }
+    $("jobs-list").innerHTML = jobs.map(j => {
+      const done = j.stages.filter(s => s.status === "done").length;
+      const cur = j.stages.find(s => s.status === "running");
+      const overall = (100 * (done + (cur ? cur.progress : 0))) / j.stages.length;
+      const head = j.status === "done" ? `<sl-badge variant="success" pill>done</sl-badge>` : j.status === "failed" ? `<sl-badge variant="danger" pill>failed</sl-badge>` : j.status === "queued" ? `<sl-badge variant="neutral" pill>queued</sl-badge>` : `<sl-badge variant="primary" pill>${overall.toFixed(0)}%</sl-badge>`;
+      return `<div class="job ${j.status}">
+        <div class="job-head"><span class="job-name">${esc(j.name)}</span>${head}</div>
+        ${j.status === "running" ? `<sl-progress-bar value="${overall}"></sl-progress-bar>` : ""}
+        <ol class="stages">${j.stages.map(s => `<li class="st-${s.status}"><sl-icon name="${STAGE_ICON[s.status] || "circle"}"></sl-icon><span>${esc(s.label)}</span>${s.status === "running" && s.progress > 0 ? `<span class="mono muted">${(100 * s.progress).toFixed(0)}%</span>` : ""}</li>`).join("")}</ol>
+        ${j.error ? `<div class="job-error">${esc(j.error)}</div>` : ""}
+        ${j.status === "done" ? `<sl-button size="small" variant="primary" class="job-open" data-name="${esc(j.name)}"><sl-icon slot="prefix" name="box-arrow-up-right"></sl-icon>Open results</sl-button>` : ""}
+      </div>`;
+    }).join("");
+  }
+
+  async function pollJobs(force) {
+    clearTimeout(jobsTimer);
+    let jobs = [];
+    try { jobs = await api("/api/jobs"); } catch (e) { jobsTimer = setTimeout(pollJobs, 5000); return; }
+    renderJobs(jobs);
+    for (const j of jobs) {
+      const prev = lastJobs[j.id];
+      if (prev && prev !== j.status) {
+        if (j.status === "done") {
+          await loadRunsKeep();
+          notify(`“${j.name}” is ready.`, "success", "check2-circle", { label: "Open", run: () => openByName(j.name) });
+        } else if (j.status === "failed") {
+          notify(`“${j.name}” failed: ${j.error}`, "danger", "exclamation-octagon");
+        }
+      }
+      lastJobs[j.id] = j.status;
+    }
+    const live = jobs.some(j => j.status === "queued" || j.status === "running");
+    if (live || force) jobsTimer = setTimeout(pollJobs, live ? 1500 : 5000);
+  }
+
+  async function loadRunsKeep() {
+    const cur = run && run.name;
+    runs = await api("/api/runs");
+    const sel = $("run");
+    sel.innerHTML = runs.map((r, i) => `<sl-option value="r${i}">${esc(r.name)}<span slot="suffix" class="mono muted">${r.n_defects.toLocaleString()}</span></sl-option>`).join("");
+    $("welcome").classList.toggle("hidden", runs.length > 0);
+    await sel.updateComplete;
+    if (cur && runs.some(r => r.name === cur)) { sel.value = `r${runs.findIndex(r => r.name === cur)}`; run = runs.find(r => r.name === cur); }
+    else if (runs.length) { await openByName(runs[0].name); }
+  }
+
+  async function openByName(name) {
+    if (!runs.some(r => r.name === name)) runs = await api("/api/runs");
+    const sel = $("run");
+    sel.value = `r${runs.findIndex(r => r.name === name)}`;
+    $("jobs-drawer").hide();
+    await openRun(name);
+  }
+
   // ---------------------------------------------------------------- keys & controls
   function typingTarget(e) {
     return e.composedPath().some(el => el.tagName && (["INPUT", "TEXTAREA", "SL-INPUT", "SL-SELECT", "SL-RANGE"].includes(el.tagName) || el.isContentEditable));
   }
   document.addEventListener("keydown", e => {
-    if (e.metaKey || e.ctrlKey || e.altKey || typingTarget(e) || $("help").open) return;
+    if (e.metaKey || e.ctrlKey || e.altKey || typingTarget(e) || $("help").open || $("add-dialog").open) return;
     if (e.key === "ArrowDown" || e.key === "j") { e.preventDefault(); setActive(Math.min(active + 1, view.length - 1), true); }
     else if (e.key === "ArrowUp" || e.key === "k") { e.preventDefault(); setActive(Math.max(active - 1, 0), true); }
     else if (e.key === "r") setReview("real");
@@ -410,15 +634,30 @@
   });
 
   function wire() {
+    $("run").addEventListener("sl-change", () => { const v = $("run").value; if (v) openRun(runs[+v.slice(1)].name); });
     $("list").addEventListener("scroll", () => { cancelAnimationFrame(rowsFrame); rowsFrame = requestAnimationFrame(renderRows); }, { passive: true });
     $("list").addEventListener("click", e => { const row = e.target.closest(".row"); if (row) setActive(+row.dataset.i, true); });
     if (window.ResizeObserver) new ResizeObserver(() => renderRows()).observe($("list"));
+    const onFilter = () => { active = -1; $("list").scrollTop = 0; refreshList(); renderInspector(); };
     $("class-chips").addEventListener("click", e => {
       const c = e.target.closest(".chip"); if (!c) return;
       const q = $("q"); q.value = (q.value || "").trim().toLowerCase() === c.dataset.cls ? "" : c.dataset.cls;
-      active = -1; $("list").scrollTop = 0; refreshList(); renderInspector();
+      onFilter();
     });
-    const onFilter = () => { active = -1; $("list").scrollTop = 0; refreshList(); renderInspector(); };
+    $("group-filter").addEventListener("click", e => {
+      const c = e.target.closest(".group-card"); if (!c) return;
+      const g = c.dataset.group;
+      if (e.shiftKey || e.metaKey) { for (const k in groupOn) groupOn[k] = k === g; } else groupOn[g] = !groupOn[g];
+      if (!Object.values(groupOn).some(Boolean)) groupOn[g] = true;
+      onFilter();
+    });
+    $("risk-filter").addEventListener("click", e => {
+      const c = e.target.closest(".chip"); if (!c) return;
+      const lv = c.dataset.level;
+      levelOn[lv] = !levelOn[lv];
+      if (!Object.values(levelOn).some(Boolean)) levelOn[lv] = true;
+      onFilter();
+    });
     $("q").addEventListener("sl-input", onFilter);
     $("q").addEventListener("sl-clear", onFilter);
     $("sort").addEventListener("sl-change", onFilter);
@@ -427,7 +666,7 @@
     $("measure-close").addEventListener("click", () => { $("card-measure").classList.add("hidden"); measurePts = []; safeDraw(); });
     $("btn-help").addEventListener("click", () => $("help").show());
     $("btn-positions").addEventListener("click", () => {
-      if (!selected.size) { notify("Select candidates for re-imaging with X first.", "warning", "exclamation-triangle"); return; }
+      if (!selected.size) { notify("Select findings for re-imaging with X first.", "warning", "exclamation-triangle"); return; }
       location.href = `/api/runs/${encodeURIComponent(run.name)}/positions.xml?ids=${[...selected].join(",")}`;
     });
 
@@ -446,6 +685,8 @@
     $("layer-defects").addEventListener("sl-change", safeDraw);
 
     $("thr").tooltipFormatter = v => v.toFixed(2);
+    $("thr-speck").tooltipFormatter = v => v.toFixed(2);
+    $("thr-trace").tooltipFormatter = v => v.toFixed(2);
     $("btn-apply").addEventListener("click", async () => {
       const btn = $("btn-apply"); btn.loading = true;
       try {
@@ -454,6 +695,17 @@
         defects = await api(`/api/runs/${encodeURIComponent(run.name)}/defects`);
         active = -1; refreshList(); refreshStats(); renderInspector();
         notify(`Re-extracted ${r.n.toLocaleString()} candidates.`, "success", "check2-circle");
+      } catch (e) { fail(e); }
+      btn.loading = false;
+    });
+    $("btn-rethreshold").addEventListener("click", async () => {
+      const btn = $("btn-rethreshold"); btn.loading = true;
+      try {
+        const q = `speck=${$("thr-speck").value}&trace=${$("thr-trace").value}&min_area_px=${parseInt($("minpx-scan").value, 10) || 1}`;
+        const r = await api(`/api/runs/${encodeURIComponent(run.name)}/rethreshold?${q}`, { method: "POST" });
+        defects = await api(`/api/runs/${encodeURIComponent(run.name)}/defects`);
+        active = -1; refreshList(); refreshStats(); renderInspector();
+        notify(`${r.n.toLocaleString()} findings at the new sensitivity.`, "success", "check2-circle");
       } catch (e) { fail(e); }
       btn.loading = false;
     });
@@ -471,12 +723,34 @@
       btn.loading = false;
     });
 
+    // add scan
+    $("btn-add").addEventListener("click", openAdd);
+    $("welcome-add").addEventListener("click", openAdd);
+    $("add-cancel").addEventListener("click", () => $("add-dialog").hide());
+    $("add-submit").addEventListener("click", submitScan);
+    $("file-input").addEventListener("change", e => { if (e.target.files[0]) setFile(e.target.files[0]); });
+    const drop = $("drop");
+    ["dragenter", "dragover"].forEach(t => drop.addEventListener(t, e => { e.preventDefault(); drop.classList.add("over"); }));
+    ["dragleave", "drop"].forEach(t => drop.addEventListener(t, e => { e.preventDefault(); drop.classList.remove("over"); }));
+    drop.addEventListener("drop", e => { const f = e.dataTransfer.files[0]; if (f) setFile(f); });
+    // dropping anywhere on the page opens the dialog with that file
+    document.addEventListener("dragover", e => { if (!$("add-dialog").open && e.dataTransfer && [...e.dataTransfer.types].includes("Files")) e.preventDefault(); });
+    document.addEventListener("drop", e => {
+      if ($("add-dialog").open || !e.dataTransfer || !e.dataTransfer.files.length) return;
+      e.preventDefault(); openAdd(); setFile(e.dataTransfer.files[0]);
+    });
+    $("gds-input").addEventListener("change", e => { const f = e.target.files[0]; if (f) { pickedGds = f; $("gds-name").textContent = `${f.name} · ${fmtBytes(f.size)}`; } });
+
+    // jobs
+    $("btn-jobs").addEventListener("click", () => { $("jobs-drawer").show(); pollJobs(true); });
+    $("jobs-list").addEventListener("click", e => { const b = e.target.closest(".job-open"); if (b) openByName(b.dataset.name); });
+
     $("reviewer").value = store.get("chipscan.reviewer") || "";
     $("reviewer").addEventListener("sl-change", e => store.set("chipscan.reviewer", e.target.value));
   }
 
-  const TAGS = ["sl-select", "sl-option", "sl-input", "sl-button", "sl-switch", "sl-range", "sl-dialog", "sl-progress-bar", "sl-icon-button", "sl-badge"];
+  const TAGS = ["sl-select", "sl-option", "sl-input", "sl-button", "sl-switch", "sl-range", "sl-dialog", "sl-drawer", "sl-progress-bar", "sl-icon-button", "sl-badge", "sl-details"];
   Promise.all(TAGS.map(t => customElements.whenDefined(t)))
-    .then(() => { wire(); return loadRuns(); })
+    .then(() => { wire(); pollJobs(true); return loadRuns(); })
     .catch(e => { document.body.innerHTML = `<pre style="padding:20px;color:#f26b6b">${esc(e.stack || e)}</pre>`; });
 })();
