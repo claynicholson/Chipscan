@@ -488,22 +488,23 @@ def _slug(name: str) -> str:
 
 def create_app(config_paths: list[Path], db_path: Path | None = None, runs_root: Path | None = None) -> FastAPI:
     runs: dict[str, Run] = {}
+    runs_root = Path(runs_root) if runs_root else Path.cwd() / "runs"
+    runs_root.mkdir(parents=True, exist_ok=True)
+    # finished scans first (newest first): they are what the lab works from; older runs follow
+    scans = [d for d in runs_root.iterdir() if (d / "scan.json").exists()]
+    for d in sorted(scans, key=lambda d: -(d / "scan.json").stat().st_mtime):
+        try:
+            r = Run.load_scan(d)
+            runs[r.name] = r
+        except Exception:
+            pass
     for p in config_paths:
         p = Path(p)
         if p.is_dir() and (p / "scan.json").exists():
             r = Run.load_scan(p)
         else:
             r = Run.load_anomaly(p) if p.name.endswith(".anomalies.json") else Run.load(p)
-        runs[r.name] = r
-    runs_root = Path(runs_root) if runs_root else Path.cwd() / "runs"
-    runs_root.mkdir(parents=True, exist_ok=True)
-    for d in sorted(runs_root.iterdir()):
-        if (d / "scan.json").exists() and d.name not in runs:
-            try:
-                r = Run.load_scan(d)
-                runs[r.name] = r
-            except Exception:
-                pass
+        runs.setdefault(r.name, r)
     db = ReviewDB(db_path or ((next(iter(runs.values())).out_dir if runs else runs_root) / "reviews.sqlite"))
 
     def add_run(run_dir: Path) -> None:

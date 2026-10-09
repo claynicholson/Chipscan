@@ -183,8 +183,11 @@ def _align_to(ref: np.ndarray, p: np.ndarray, max_shift: float = 3.0) -> np.ndar
     return ndi.shift(p, s, order=1, mode="nearest")
 
 
-def compare_group(patches: np.ndarray, z_min: float = 6.0, min_diff: float = 0.06, min_area: int = 4) -> list[dict]:
-    """Per member: outlier mask + scores against the group's median and spread."""
+def compare_group(patches: np.ndarray, z_min: float = 6.0, min_diff: float = 0.06, min_area: int = 4, footprint: np.ndarray | None = None) -> list[dict]:
+    """Per member: outlier mask + scores against the group's median and spread.
+
+    `footprint` (size x size bool) limits the comparison to the device itself: the traces
+    around a junction bend and shift from cell to cell and are judged by the trace detector."""
     n = len(patches)
     if n < 3:
         return [{"z": 0.0, "ncc": 1.0, "mask": None} for _ in range(n)]
@@ -202,11 +205,15 @@ def compare_group(patches: np.ndarray, z_min: float = 6.0, min_diff: float = 0.0
     for p in al:
         d = ndi.gaussian_filter(p - med, 0.8)
         z = np.abs(d) / (np.maximum(spread, noise) + noise)
+        if footprint is not None:
+            z = np.where(footprint, z, 0.0)
         m = (z > z_eff) & (np.abs(d) > min_diff)
         lab, k = ndi.label(m)
         if k:
             sizes = ndi.sum(m, lab, range(1, k + 1))
-            m = np.isin(lab, 1 + np.nonzero(sizes >= min_area)[0])
+            # an edge shifted by a sub-pixel misalignment leaves a 1 px sliver; real damage has width
+            core = ndi.sum(ndi.binary_erosion(m, structure=np.ones((3, 3), bool)), lab, range(1, k + 1))
+            m = np.isin(lab, 1 + np.nonzero((sizes >= min_area) & (core >= 1))[0])
         pc = p - p.mean()
         ncc = float((pc * mc).sum() / max(np.sqrt((pc * pc).sum() * (mc * mc).sum()), 1e-9))
         out.append({"z": float(z[m].max()) if m.any() else float(np.percentile(z, 99.5)), "ncc": ncc, "mask": m if m.any() else None})
@@ -214,6 +221,22 @@ def compare_group(patches: np.ndarray, z_min: float = 6.0, min_diff: float = 0.0
 
 
 # ----------------------------------------------------------------------------- 5. pipeline
+class _ZarrRegion:
+    """read_region over a plain 2-D (zarr) array, zero-padded outside."""
+
+    def __init__(self, arr):
+        self.arr = arr
+        self.shape = arr.shape
+
+    def read_region(self, x0, y0, x1, y1, level=0):
+        H, W = self.shape
+        out = np.zeros((y1 - y0, x1 - x0), np.uint8)
+        cx0, cy0, cx1, cy1 = max(x0, 0), max(y0, 0), min(x1, W), min(y1, H)
+        if cx1 > cx0 and cy1 > cy0:
+            out[cy0 - y0 : cy1 - y0, cx0 - x0 : cx1 - x0] = np.asarray(self.arr[cy0:cy1, cx0:cx1])
+        return out
+
+
 def component_errors(
     source: ImageSource,
     insts: list[dict],
@@ -223,6 +246,8 @@ def component_errors(
     min_type_members: int = 6,
     progress=None,
     id_start: int = 0,
+    class_map=None,
+    report_missing: bool = True,
 ) -> tuple[list[dict], dict]:
     """Outlined component errors and a summary (types, lines, members)."""
     px = pixel_size_um or 1.0
@@ -246,6 +271,10 @@ def component_errors(
         centers = np.array([[insts[i]["cx"], insts[i]["cy"]] for i in idx])
         P = read_patches(source, centers, size)
         pos = {g: k for k, g in enumerate(idx)}
+        foot = None
+        if class_map is not None:
+            Mk = read_patches(_ZarrRegion(class_map), centers, size)  # float of class codes
+            foot = ndi.binary_dilation(np.mean(np.isclose(Mk * 255.0, 2.0), axis=0) > 0.5, iterations=2)
         flat = P.reshape(len(P), -1)
         flat = flat - flat.mean(1, keepdims=True)
         flat = flat / (np.linalg.norm(flat, axis=1, keepdims=True) + 1e-9)
@@ -267,7 +296,7 @@ def component_errors(
             nn = [j for j in nn if sims[j] > 0.75]
             groups.append(([idx[j] for j in nn] + [i], "type"))
         for members, how in groups:
-            res = compare_group(P[[pos[m] for m in members]], z_min=z_min)
+            res = compare_group(P[[pos[m] for m in members]], z_min=z_min, footprint=foot)
             targets = members if how == "line" else members[-1:]
             res_t = res if how == "line" else res[-1:]
             summary["n_compared"] += len(targets)
@@ -312,7 +341,7 @@ def component_errors(
                 )
                 nid += 1
         # missing members in regular lines
-        for ln in lines:
+        for ln in lines if report_missing else []:
             recs_m = _missing_in_line(source, insts, ln, P, pos, size, px, nid)
             nid += len(recs_m)
             recs.extend(recs_m)
@@ -328,7 +357,12 @@ def _missing_in_line(source, insts, ln, P, pos, size, px, nid) -> list[dict]:
     ax = 0 if np.ptp(xy[:, 0]) >= np.ptp(xy[:, 1]) else 1
     gaps = np.diff(xy[:, ax])
     pitch = float(np.median(gaps))
-    if pitch < 4 or np.mean(np.abs(gaps - pitch) < 0.08 * pitch) < 0.7:  # not a regular line
+    if pitch < 4 or np.mean(np.abs(gaps - pitch) < 0.05 * pitch) < 0.9:  # not a strictly regular line
+        return []
+    # a line that skips positions often does so by design (staggered rows, segment breaks):
+    # only a rare hole is a missing component
+    n_multi = int(np.sum(gaps / pitch >= 1.6))
+    if n_multi > max(1, len(gaps) // 50):
         return []
     med = np.median(P[[pos[i] for i in ln]], axis=0)
     mc = med - med.mean()

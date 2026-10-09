@@ -14,7 +14,7 @@ def test_viewer_api(tmp_path):
     cfg.registration.fine.grid = 4
     cfg.dump(paths["config"])
     run_inspection(cfg)
-    app = create_app([paths["config"]], tmp_path / "reviews.sqlite")
+    app = create_app([paths["config"]], tmp_path / "reviews.sqlite", tmp_path / "runs")
     c = TestClient(app)
     assert c.get("/").status_code == 200
     runs = c.get("/api/runs").json()

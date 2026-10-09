@@ -33,6 +33,8 @@ def main() -> None:
     ap.add_argument("--lr", type=float, default=2e-3)
     ap.add_argument("--init-path", default=None, help="fine-tune from this checkpoint (any task with the same output size)")
     ap.add_argument("--pos-weight", type=float, default=3.0)
+    ap.add_argument("--hard-negatives", default=None, help="JSON from mine_negatives.py: sample tiles around these (unlabelled)")
+    ap.add_argument("--p-hard", type=float, default=0.4)
     a = ap.parse_args()
     scenes = [PyramidSource(ROOT / "data/pyramids" / f"{n}.zarr") for n in TRAIN]
     val = [PyramidSource(ROOT / "data/pyramids" / f"{n}.zarr") for n in VAL]
@@ -42,6 +44,15 @@ def main() -> None:
             ds, vs = LayoutTiles(scenes, n_samples=a.samples, seed=1), LayoutTiles(val, n_samples=a.val_samples, seed=99, augment=False)
         else:
             ds = DefectTiles(scenes, which, n_samples=a.samples, seed=2 if which == "speck" else 3)
+            if a.hard_negatives:
+                import json
+
+                import numpy as np
+
+                hn = json.loads(Path(a.hard_negatives).read_text())
+                ds.hard = [np.asarray(hn.get(n, []), dtype=np.int64).reshape(-1, 2) for n in TRAIN]
+                ds.p_hard = a.p_hard
+                print("hard negatives:", {n: len(hn.get(n, [])) for n in TRAIN}, flush=True)
             vs = DefectTiles(val, which, n_samples=a.val_samples, seed=98, augment=False)
         init = a.init_path or (ROOT / "models" / f"{which}_{a.init}.pt" if a.init else None)
         train(which, ds, ROOT / "models" / f"{which}_{a.version}.pt", vs, epochs=a.epochs, lr=a.lr, init_from=init, pos_weight=a.pos_weight, log=lambda s: print(s, flush=True))

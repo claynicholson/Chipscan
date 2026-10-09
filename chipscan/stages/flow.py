@@ -53,11 +53,12 @@ class ScanSpec:
     straighten: bool = True
     speck_threshold: float = 0.5
     trace_threshold: float = 0.5
-    component_z: float = 6.0
+    component_z: float = 12.0
+    component_missing: bool = False  # missing-member reports need regular lines; off until validated per design
     min_area_px: int = 4
     layout_model: str = str(ROOT / "models" / "layout_v1.pt")
     speck_model: str = str(ROOT / "models" / "speck_v2.pt")
-    trace_model: str = str(ROOT / "models" / "trace_v1.pt")
+    trace_model: str = str(ROOT / "models" / "trace_v2.pt")
     device: str = "auto"
 
 
@@ -135,21 +136,27 @@ def extract_findings(run_dir: Path, spec: ScanSpec, source: ImageSource | None =
     cls = zarr.open_group(str(run_dir / "layout.zarr"), mode="r")["0"]
     info: dict = {}
     out: list[dict] = []
+    pitches_cache: dict = {}
     for group, thr, merge in (("speck", spec.speck_threshold, 6), ("trace", spec.trace_threshold, 8)):
         amap = zarr.open_group(str(run_dir / f"{group}.zarr"), mode="r")["0"]
         recs = anomalies_from_map(amap, thr, spec.min_area_px, px, merge_px=merge, solid=True)
         n0 = len(recs)
-        recs, on_text = suppress_text(recs, cls)
-        if group == "speck" and recs:
-            # designed things that recur at the reticle pitch are not dirt; tight patches so that a
-            # real speck dominates its own patch and does not match its twin
-            pitches = estimate_pitches(source)
+        # small specks sit right on letter strokes the layout net only partly calls text: wider margin
+        recs, on_text = suppress_text(recs, cls, grow_px=10 if group == "speck" else 4)
+        if recs:
+            # designed things recur at the chip/reticle pitch, defects do not: a candidate whose tight
+            # surroundings are reproduced one pitch away is designed structure (corner, line end, mark)
+            if "p" not in pitches_cache:
+                pitches_cache["p"] = estimate_pitches(source)
+            pitches = pitches_cache["p"]
             kept = []
             for d in recs:
-                half = int(max(6, np.sqrt(d["area_px"]) + 5))
+                # specks: tight, so a real speck dominates its patch; trace candidates: enough context
+                # to include the corner or line end that makes a designed shape recognisable
+                half = int(max(6, np.sqrt(d["area_px"]) + 5)) if group == "speck" else int(max(14, np.sqrt(d["area_px"]) + 10))
                 k, _ = suppress_repeats(source, [d], pitches, half_px=half, search_px=4, match_ncc=0.85)
                 kept += k
-            info["speck_repeats_dropped"] = len(recs) - len(kept)
+            info[f"{group}_repeats_dropped"] = len(recs) - len(kept)
             recs = kept
         if group == "speck" and recs:
             recs = [_grow_on_pads(source, d, px) for d in recs]
@@ -168,9 +175,14 @@ def extract_findings(run_dir: Path, spec: ScanSpec, source: ImageSource | None =
         tc = np.array([d["centroid_px"] for d in traces])
         for s in specks:
             dd = np.hypot(*(tc - s["centroid_px"]).T)
-            for j in np.nonzero(dd < 30)[0]:
+            reach = 30 + 0.5 * max(s["bbox_px"]["x1"] - s["bbox_px"]["x0"], s["bbox_px"]["y1"] - s["bbox_px"]["y0"])
+            for j in np.nonzero(dd < reach)[0]:
                 t = traces[j]
-                if _iou(s["bbox_px"], t["bbox_px"]) > 0.3:
+                sb, tb = s["bbox_px"], t["bbox_px"]
+                inside = sb["x0"] - 3 <= t["centroid_px"][0] <= sb["x1"] + 3 and sb["y0"] - 3 <= t["centroid_px"][1] <= sb["y1"] + 3
+                if inside:  # part of an object already reported as dirt (e.g. a probe mark's edge)
+                    drop.add(id(t))
+                elif _iou(sb, tb) > 0.3:
                     drop.add(id(t) if s["score"] >= t["score"] else id(s))
     out = [d for d in out if id(d) not in drop]
     info["dedup_dropped"] = len(drop)
@@ -232,7 +244,7 @@ def run_scan(spec: ScanSpec, runs_root: str | Path = ROOT / "runs", progress: Pr
     from chipscan.io.pyramid import build_pyramid
     from chipscan.stages.components import component_errors, find_instances
     from chipscan.stages.nets import TiledNet
-    from chipscan.stages.risk import assess
+    from chipscan.stages.risk import assess, suppress_text
     from chipscan.stages.straighten import straighten
 
     run_dir = Path(runs_root) / spec.name
@@ -310,7 +322,10 @@ def run_scan(spec: ScanSpec, runs_root: str | Path = ROOT / "runs", progress: Pr
         # 6. components --------------------------------------------------------------
         stage("components")
         insts = find_instances(cls)
-        comp_recs, csum = component_errors(src, insts, px, z_min=spec.component_z, progress=sub("components"))
+        comp_recs, csum = component_errors(src, insts, px, z_min=spec.component_z, progress=sub("components"), class_map=cls, report_missing=spec.component_missing)
+        comp_recs, csum["twin_dropped"] = twin_check_components(src, comp_recs)
+        comp_recs, on_text = suppress_text(comp_recs, cls)
+        csum["on_text_dropped"] = len(on_text)
         done("components", **csum)
 
         # 7. risk ---------------------------------------------------------------------
@@ -339,6 +354,61 @@ def run_scan(spec: ScanSpec, runs_root: str | Path = ROOT / "runs", progress: Pr
         save_meta()
         raise
     return run_dir
+
+
+def twin_check_components(source: ImageSource, recs: list[dict]) -> tuple[list[dict], int]:
+    """Keep a component finding only if the same spot on the identical neighbouring chips differs.
+
+    A position that is empty on every chip is a gap in the design, not a missing junction; a
+    feature that every chip shares is design, not a defect."""
+    from chipscan.segmentation.repeats import estimate_pitches, suppress_repeats
+
+    if not recs:
+        return recs, 0
+    pitches = estimate_pitches(source)
+    kept = []
+    for d in recs:
+        b = d.get("component_bbox_px") or d["bbox_px"]
+        half = int(max(b["x1"] - b["x0"], b["y1"] - b["y0"]) / 2 + 8)
+        probe = dict(d)
+        probe["centroid_px"] = [(b["x0"] + b["x1"]) / 2, (b["y0"] + b["y1"]) / 2]
+        k, _ = suppress_repeats(source, [probe], pitches, half_px=half, search_px=4, match_ncc=0.9 if d["class"] != "component_missing" else 0.8)
+        if k:
+            d["repeat_ncc"] = k[0].get("repeat_ncc")
+            kept.append(d)
+    return kept, len(recs) - len(kept)
+
+
+def reprocess(run_dir: Path) -> dict:
+    """Redo everything after the networks (components, extraction, risk, export) from stored maps."""
+    from chipscan.stages.components import component_errors, find_instances
+    from chipscan.stages.risk import assess, suppress_text
+
+    run_dir = Path(run_dir)
+    meta = json.loads((run_dir / "scan.json").read_text())
+    spec = ScanSpec(**{k: v for k, v in meta["spec"].items() if k in ScanSpec.__dataclass_fields__})
+    src = PyramidSource(run_dir / "corrected.zarr")
+    px = spec.pixel_size_um or 1.0
+    cls = zarr.open_group(str(run_dir / "layout.zarr"), mode="r")["0"]
+    insts = find_instances(cls)
+    comp_recs, csum = component_errors(src, insts, px, z_min=spec.component_z, class_map=cls, report_missing=spec.component_missing)
+    comp_recs, csum["twin_dropped"] = twin_check_components(src, comp_recs)
+    comp_recs, on_text = suppress_text(comp_recs, cls)
+    csum["on_text_dropped"] = len(on_text)
+    st_recs, info = extract_findings(run_dir, spec, src)
+    findings = st_recs + comp_recs
+    assess(findings, cls, px)
+    findings.sort(key=lambda d: -d["risk"])
+    for i, d in enumerate(findings):
+        d["id"] = i
+    summary = _summary(findings)
+    (run_dir / "findings.json").write_text(json.dumps({"summary": summary, "findings": findings}))
+    _write_csv(run_dir / "findings.csv", findings)
+    meta["summary"] = summary
+    meta["stages"].setdefault("components", {}).update(csum)
+    meta["stages"].setdefault("risk", {}).update(info)
+    (run_dir / "scan.json").write_text(json.dumps(meta, indent=2, default=str))
+    return {"summary": summary, "components": csum, "extract": info}
 
 
 def refresh_findings(run_dir: Path, spec: ScanSpec) -> list[dict]:

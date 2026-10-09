@@ -44,6 +44,9 @@ class ScanTiles(Dataset):
     def __len__(self) -> int:
         return self.n
 
+    hard: list | None = None  # per scene: (n, 2) array of hard-negative centres, or None
+    p_hard: float = 0.0
+
     def read_tile(self) -> np.ndarray:
         k = int(self.rng.integers(len(self.scenes)))
         sc = self.scenes[k]
@@ -51,6 +54,20 @@ class ScanTiles(Dataset):
         size = max(32, int(round(self.tile_px * f)))
         H, W = sc.shape
         t = None
+        if self.hard and self.rng.uniform() < self.p_hard:
+            ks = [i for i, h in enumerate(self.hard) if h is not None and len(h)]
+            if ks:
+                k = int(self.rng.choice(ks))
+                sc = self.scenes[k]
+                H, W = sc.shape
+                cx, cy = self.hard[k][int(self.rng.integers(len(self.hard[k])))]
+                j = size // 3
+                x = int(np.clip(cx - size // 2 + self.rng.integers(-j, j + 1), 0, max(0, W - size)))
+                y = int(np.clip(cy - size // 2 + self.rng.integers(-j, j + 1), 0, max(0, H - size)))
+                t = sc.read_region(x, y, x + size, y + size).astype(np.float32) / 255.0
+                if size != self.tile_px:
+                    t = cv2.resize(t, (self.tile_px, self.tile_px), interpolation=cv2.INTER_AREA if f > 1 else cv2.INTER_LINEAR)
+                return t
         for _ in range(30):
             x, y = int(self.rng.uniform(0, max(1, W - size))), int(self.rng.uniform(0, max(1, H - size)))
             t = sc.read_region(x, y, x + size, y + size).astype(np.float32) / 255.0

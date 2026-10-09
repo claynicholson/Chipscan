@@ -72,9 +72,13 @@ def assess(findings: list[dict], class_map, pixel_size_um: float | None, window_
         g = d.get("group", "speck")
         conf = float(np.clip(d.get("score", 0.5), 0, 1))
         if g == "component":
+            # it is on a junction by construction; how bad depends on how different it is
             cls_name = d.get("class", "")
-            base = 0.9 if cls_name == "component_missing" else 0.75
-            r = base + 0.25 * min(1.0, (d.get("z") or 0) / 25.0)
+            if cls_name == "component_missing":
+                r = 0.85
+            else:
+                diff = max(min(1.0, (d.get("z") or 0) / 40.0), min(1.0, max(0.0, 1.0 - (d.get("ncc") or 1.0))))
+                r = 0.3 + 0.6 * diff + 0.1 * sz
         elif g == "trace":
             # a shape error is on a trace by construction; near a junction it matters most
             r = (0.45 + 0.35 * jj + 0.2 * sz) * (0.6 + 0.4 * conf)
