@@ -116,8 +116,8 @@ def real_dirt(img: np.ndarray, t: Tones | None = None) -> tuple[np.ndarray, np.n
         if sl is None:
             continue
         m = bl[sl] == i
-        if m.sum() < 900:
-            continue
+        if m.sum() < 2500 or min(sl[0].stop - sl[0].start, sl[1].stop - sl[1].start) < 40:
+            continue  # bond/probe pads only; junction pads and thin bright lines are not "pads"
         filled = ndi.binary_fill_holes(m)
         interior = ndi.binary_erosion(filled, iterations=10)
         if interior.sum() < 200:

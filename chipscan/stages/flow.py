@@ -51,7 +51,7 @@ class ScanSpec:
     trace_layers: list[str] = field(default_factory=list)
     component_layers: list[str] = field(default_factory=list)
     straighten: bool = True
-    speck_threshold: float = 0.5
+    speck_threshold: float = 0.35
     trace_threshold: float = 0.5
     component_z: float = 12.0
     component_missing: bool = False  # missing-member reports need regular lines; off until validated per design
@@ -59,6 +59,9 @@ class ScanSpec:
     layout_model: str = str(ROOT / "models" / "layout_v1.pt")
     speck_model: str = str(ROOT / "models" / "speck_v2.pt")
     trace_model: str = str(ROOT / "models" / "trace_v2.pt")
+    anomaly_model: str = str(ROOT / "models" / "anomaly_v6.pt")
+    """Second opinion for dirt: the general anomaly model finds things the speck net misses (hairs,
+    odd particles). Its candidates go through the same text and twin filters."""
     device: str = "auto"
 
 
@@ -124,12 +127,53 @@ def _iou(a: dict, b: dict) -> float:
     return inter / u if u > 0 else 0.0
 
 
+# ----------------------------------------------------------------------------- dirt candidates
+def pad_dirt_map(source: ImageSource, store, tile: int = 1024, margin: int = 160, progress=None) -> None:
+    """Rule-based dirt on pads (anything dark inside a pad's interior), written as 0/255."""
+    from chipscan.stages.nets import real_dirt
+    from chipscan.tiling import make_tiles
+
+    tiles = make_tiles(source.shape, tile, margin)
+    for i, t in enumerate(tiles):
+        x0, y0, x1, y1 = t.read.to_int()
+        img = source.read_region(x0, y0, x1, y1).astype(np.float32) / 255.0
+        dirt, _ = real_dirt(img)
+        cx0, cy0, cx1, cy1 = t.core.to_int()
+        store[cy0:cy1, cx0:cx1] = (dirt[t.core_slice_in_read] * 255).astype(np.uint8)
+        if progress:
+            progress(i + 1, len(tiles))
+
+
+def speck_union_map(run_dir: Path, spec: ScanSpec) -> zarr.Array:
+    """All dirt candidates in one map: speck net, anomaly model, pad rule (max of calibrated scores)."""
+    run_dir = Path(run_dir)
+    sp = zarr.open_group(str(run_dir / "speck.zarr"), mode="r")["0"]
+    extra = []
+    for name, thr in (("anomaly", 0.5), ("paddirt", 0.5)):
+        pth = run_dir / f"{name}.zarr"
+        if pth.exists():
+            extra.append((zarr.open_group(str(pth), mode="r")["0"], thr))
+    g, u = _new_map(run_dir / "speck_union.zarr", sp.shape)
+    H, W = sp.shape
+    t_sp = spec.speck_threshold
+    for y in range(0, H, 2048):
+        for x in range(0, W, 2048):
+            a = np.asarray(sp[y : y + 2048, x : x + 2048]).astype(np.float32) / 255.0
+            # rescale so each source's own threshold lands on 0.5
+            out = np.where(a >= t_sp, 0.5 + 0.5 * (a - t_sp) / max(1e-6, 1 - t_sp), 0.5 * a / max(1e-6, t_sp))
+            for arr, thr in extra:
+                b = np.asarray(arr[y : y + 2048, x : x + 2048]).astype(np.float32) / 255.0
+                out = np.maximum(out, np.where(b >= thr, 0.5 + 0.5 * (b - thr) / max(1e-6, 1 - thr), 0.5 * b / max(1e-6, thr)))
+            u[y : y + 2048, x : x + 2048] = np.rint(out * 255).astype(np.uint8)
+    return u
+
+
 # ----------------------------------------------------------------------------- findings from maps
 def extract_findings(run_dir: Path, spec: ScanSpec, source: ImageSource | None = None) -> tuple[list[dict], dict]:
     """Speck + trace findings from the stored probability maps (cheap: no network run)."""
     from chipscan.segmentation.anomaly import anomalies_from_map
     from chipscan.segmentation.repeats import estimate_pitches, suppress_repeats
-    from chipscan.stages.risk import suppress_text
+    from chipscan.stages.risk import suppress_component_shapes, suppress_text, suppress_text_lines
 
     source = source or PyramidSource(run_dir / "corrected.zarr")
     px = spec.pixel_size_um or getattr(source, "pixel_size_um", None) or 1.0
@@ -138,11 +182,36 @@ def extract_findings(run_dir: Path, spec: ScanSpec, source: ImageSource | None =
     out: list[dict] = []
     pitches_cache: dict = {}
     for group, thr, merge in (("speck", spec.speck_threshold, 6), ("trace", spec.trace_threshold, 8)):
-        amap = zarr.open_group(str(run_dir / f"{group}.zarr"), mode="r")["0"]
+        if group == "speck":
+            amap, thr = speck_union_map(run_dir, spec), 0.5
+        else:
+            amap = zarr.open_group(str(run_dir / f"{group}.zarr"), mode="r")["0"]
         recs = anomalies_from_map(amap, thr, spec.min_area_px, px, merge_px=merge, solid=True)
         n0 = len(recs)
+        if group == "speck":
+            # where did each candidate come from? anomaly-model-only finds are the least specific
+            sp_net = zarr.open_group(str(run_dir / "speck.zarr"), mode="r")["0"]
+            pad = zarr.open_group(str(run_dir / "paddirt.zarr"), mode="r")["0"] if (run_dir / "paddirt.zarr").exists() else None
+            for d in recs:
+                b = d["bbox_px"]
+                ys, xs = slice(int(b["y0"]), int(b["y1"])), slice(int(b["x0"]), int(b["x1"]))
+                net = float(np.asarray(sp_net[ys, xs]).max()) / 255.0
+                rule = float(np.asarray(pad[ys, xs]).max()) / 255.0 if pad is not None else 0.0
+                d["source"] = "speck_net" if net >= spec.speck_threshold else ("pad_rule" if rule >= 0.5 else "anomaly_model")
+            recs = [d for d in recs if not (d["source"] == "anomaly_model" and d["area_px"] > 3000)]
         # small specks sit right on letter strokes the layout net only partly calls text: wider margin
-        recs, on_text = suppress_text(recs, cls, grow_px=10 if group == "speck" else 4)
+        if group == "speck":
+            # compact blobs survive inside "text" for the speck net and the pad rule (the layout net
+            # calls dark particles text); the anomaly model fires on letters, so its finds do not
+            a, on_a = suppress_text([d for d in recs if d.get("source") != "anomaly_model"], cls, grow_px=10, keep_compact=True)
+            b, on_b = suppress_text([d for d in recs if d.get("source") == "anomaly_model"], cls, grow_px=10, keep_compact=False)
+            recs, on_text = a + b, on_a + on_b
+            recs, is_comp = suppress_component_shapes(recs, cls)
+            info["speck_is_component"] = len(is_comp)
+            recs, glyphs = suppress_text_lines(recs, source)
+            info["speck_text_lines"] = len(glyphs)
+        else:
+            recs, on_text = suppress_text(recs, cls, grow_px=4)
         if recs:
             # designed things recur at the chip/reticle pitch, defects do not: a candidate whose tight
             # surroundings are reproduced one pitch away is designed structure (corner, line end, mark)
@@ -153,8 +222,12 @@ def extract_findings(run_dir: Path, spec: ScanSpec, source: ImageSource | None =
             for d in recs:
                 # specks: tight, so a real speck dominates its patch; trace candidates: enough context
                 # to include the corner or line end that makes a designed shape recognisable
-                half = int(max(6, np.sqrt(d["area_px"]) + 5)) if group == "speck" else int(max(14, np.sqrt(d["area_px"]) + 10))
-                k, _ = suppress_repeats(source, [d], pitches, half_px=half, search_px=4, match_ncc=0.85)
+                strict = group == "trace" or d.get("source") == "anomaly_model"
+                half = int(max(14, np.sqrt(d["area_px"]) + 10)) if strict else int(max(6, np.sqrt(d["area_px"]) + 5))
+                # dirt on a trace leaves its patch mostly trace: only a near-identical twin means "designed".
+                # Candidates only the general anomaly model saw are judged like trace candidates.
+                # chips sit up to a few tens of px off the nominal pitch (stage placement), so search wide
+                k, _ = suppress_repeats(source, [d], pitches, half_px=half, search_px=40, match_ncc=0.85 if strict else 0.9)
                 kept += k
             info[f"{group}_repeats_dropped"] = len(recs) - len(kept)
             recs = kept
@@ -217,8 +290,8 @@ def _grow_on_pads(source: ImageSource, d: dict, px: float, pad: int = 160) -> di
         return d
     grown = own | np.isin(lab, touch)
     grown = ndi.binary_fill_holes(ndi.binary_closing(grown, iterations=3))
-    if grown.sum() <= own.sum() * 1.05:
-        return d
+    if grown.sum() <= own.sum() * 1.05 or grown.sum() > max(4 * own.sum(), 400) or grown.sum() > 6000:
+        return d  # nothing to add, or the rule ran away (a dim pad read as one big mark)
     cs, _ = cv2.findContours(grown.astype(np.uint8), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
     ys, xs = np.nonzero(grown)
     bb = {"x0": float(xs.min() + x0), "y0": float(ys.min() + y0), "x1": float(xs.max() + 1 + x0), "y1": float(ys.max() + 1 + y0)}
@@ -269,7 +342,7 @@ def run_scan(spec: ScanSpec, runs_root: str | Path = ROOT / "runs", progress: Pr
         progress(key, 1.0, dict(STAGES)[key])
 
     def sub(key: str):
-        return lambda i, n: progress(key, i / max(n, 1), dict(STAGES)[key])
+        return lambda i, n, key=key: progress(key, i / max(n, 1), dict(STAGES)[key])
 
     try:
         # 1. ingest ------------------------------------------------------------
@@ -310,7 +383,13 @@ def run_scan(spec: ScanSpec, runs_root: str | Path = ROOT / "runs", progress: Pr
         for key, model, group in (("specks", spec.speck_model, "speck"), ("traces", spec.trace_model, "trace")):
             stage(key)
             g, arr = _new_map(run_dir / f"{group}.zarr", src.shape)
-            TiledNet(model, spec.device).run(src, arr, progress=sub(key))
+            TiledNet(model, spec.device).run(src, arr, progress=(lambda i, n, key=key: progress(key, 0.5 * i / max(n, 1), dict(STAGES)[key])) if key == "specks" else sub(key))
+            if key == "specks":
+                if spec.anomaly_model and Path(spec.anomaly_model).exists():
+                    ga, aa = _new_map(run_dir / "anomaly.zarr", src.shape)
+                    TiledNet(spec.anomaly_model, spec.device).run(src, aa, progress=lambda i, n, key=key: progress(key, 0.5 + 0.4 * i / max(n, 1), dict(STAGES)[key]))
+                gp, pa = _new_map(run_dir / "paddirt.zarr", src.shape)
+                pad_dirt_map(src, pa, progress=lambda i, n, key=key: progress(key, 0.9 + 0.1 * i / max(n, 1), dict(STAGES)[key]))
             done(key)
         hg, heat = _new_map(run_dir / "heat.zarr", src.shape)
         sp, tr = zarr.open_group(str(run_dir / "speck.zarr"))["0"], zarr.open_group(str(run_dir / "trace.zarr"))["0"]
@@ -372,7 +451,7 @@ def twin_check_components(source: ImageSource, recs: list[dict]) -> tuple[list[d
         half = int(max(b["x1"] - b["x0"], b["y1"] - b["y0"]) / 2 + 8)
         probe = dict(d)
         probe["centroid_px"] = [(b["x0"] + b["x1"]) / 2, (b["y0"] + b["y1"]) / 2]
-        k, _ = suppress_repeats(source, [probe], pitches, half_px=half, search_px=4, match_ncc=0.9 if d["class"] != "component_missing" else 0.8)
+        k, _ = suppress_repeats(source, [probe], pitches, half_px=half, search_px=40, match_ncc=0.9 if d["class"] != "component_missing" else 0.8)
         if k:
             d["repeat_ncc"] = k[0].get("repeat_ncc")
             kept.append(d)

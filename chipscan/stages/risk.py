@@ -81,7 +81,9 @@ def assess(findings: list[dict], class_map, pixel_size_um: float | None, window_
                 r = 0.3 + 0.6 * diff + 0.1 * sz
         elif g == "trace":
             # a shape error is on a trace by construction; near a junction it matters most
-            r = (0.45 + 0.35 * jj + 0.2 * sz) * (0.6 + 0.4 * conf)
+            # x0.7: the trace detector is the least reliable of the three (validated precision ~0.6),
+            # so an unconfirmed trace finding should not outrank dirt or a component error on a JJ
+            r = 0.7 * (0.45 + 0.35 * jj + 0.2 * sz) * (0.6 + 0.4 * conf)
         else:  # speck
             r = sz * (0.12 + 0.88 * max(jj, 0.65 * tr)) * (0.7 + 0.3 * conf)
         score = float(np.clip(100.0 * r, 0, 100))
@@ -100,8 +102,99 @@ def assess(findings: list[dict], class_map, pixel_size_um: float | None, window_
     return findings
 
 
-def suppress_text(findings: list[dict], class_map, frac: float = 0.4, grow_px: int = 4) -> tuple[list[dict], list[dict]]:
-    """Drop findings that lie mostly on text (labels, test-structure annotations)."""
+def suppress_component_shapes(findings: list[dict], class_map, min_iou: float = 0.5) -> tuple[list[dict], list[dict]]:
+    """Drop speck candidates whose outline is a component itself (a junction the detector mistook
+    for dirt). Dirt *on* a junction overlaps only part of it and survives."""
+    kept, dropped = [], []
+    H, W = class_map.shape
+    for d in findings:
+        b = d["bbox_px"]
+        x0, y0 = int(max(0, b["x0"] - 6)), int(max(0, b["y0"] - 6))
+        x1, y1 = int(min(W, b["x1"] + 6)), int(min(H, b["y1"] + 6))
+        cls = np.asarray(class_map[y0:y1, x0:x1])
+        own = _finding_mask(d, x0, y0, cls.shape)
+        comp = ndi.binary_dilation(cls == 2, iterations=2)
+        lab, _ = ndi.label(comp)
+        ids = np.unique(lab[own & (lab > 0)])
+        if len(ids):
+            c = np.isin(lab, ids)
+            iou = float((c & own).sum()) / max(1, float((c | own).sum()))
+            if iou >= min_iou:
+                dropped.append(d)
+                continue
+        kept.append(d)
+    return kept, dropped
+
+
+def suppress_text_lines(findings: list[dict], source, window: int = 160) -> tuple[list[dict], list[dict]]:
+    """Drop detections that are one glyph in a row of glyphs: chip labels in any font size.
+
+    Around each detection, find the blobs that differ from the background; if the blob under the
+    detection has at least three neighbours of similar height, aligned on one baseline and spaced
+    like characters, it is lettering, whatever the layout net called it."""
+    import cv2  # noqa: F401
+
+    from chipscan.stages.inject import Tones
+
+    kept, dropped = [], []
+    for d in findings:
+        cx, cy = (int(round(v)) for v in d["centroid_px"])
+        x0, y0 = cx - window, cy - window
+        win = source.read_region(x0, y0, cx + window, cy + window).astype(np.float32) / 255.0
+        t = Tones(win)
+        # contrast against the *local* background: lettering often sits on its own darker panel
+        local = ndi.median_filter(win, size=41)
+        blobs = ndi.binary_closing(np.abs(win - local) > max(0.05, 4 * t.noise), iterations=1)
+        lab, n = ndi.label(blobs)
+        if n < 4:
+            kept.append(d)
+            continue
+        objs = ndi.find_objects(lab)
+        # the glyph under the detection: the smallest character-sized blob near its centre
+        near = lab[window - 6 : window + 7, window - 6 : window + 7]
+        cands = [int(v) for v in np.unique(near[near > 0])]
+        cands = [c for c in cands if objs[c - 1] is not None and 6 <= objs[c - 1][0].stop - objs[c - 1][0].start <= 120]
+        if not cands:
+            kept.append(d)
+            continue
+        me = min(cands, key=lambda c: (objs[c - 1][0].stop - objs[c - 1][0].start) * (objs[c - 1][1].stop - objs[c - 1][1].start))
+        sl = objs[me - 1]
+        h0 = sl[0].stop - sl[0].start
+        w0 = sl[1].stop - sl[1].start
+        if not (6 <= h0 <= 120):
+            kept.append(d)
+            continue
+        # touching characters merge into one word-shaped blob: wide, character height, full of
+        # enclosed holes (outlined and closed letters); dirt has none of that structure
+        mine = lab[sl] == me
+        holes = ndi.label(ndi.binary_fill_holes(mine) & ~mine)[1]
+        if w0 >= 1.8 * h0 and holes >= 3:
+            dropped.append(d)
+            continue
+        if w0 > 3 * h0:
+            kept.append(d)
+            continue
+        base0 = sl[0].stop
+        mates = 0
+        for o in objs:
+            if o is None or o is sl:
+                continue
+            h = o[0].stop - o[0].start
+            w = o[1].stop - o[1].start
+            if abs(h - h0) <= 0.3 * h0 and abs(o[0].stop - base0) <= 0.25 * h0 and w <= 2.5 * h0:
+                gap = min(abs(o[1].start - sl[1].stop), abs(sl[1].start - o[1].stop))
+                if gap <= 4 * h0:
+                    mates += 1
+        (dropped if mates >= 3 else kept).append(d)
+    return kept, dropped
+
+
+def suppress_text(findings: list[dict], class_map, frac: float = 0.4, grow_px: int = 4, keep_compact: bool = False) -> tuple[list[dict], list[dict]]:
+    """Drop findings that lie mostly on text (labels, test-structure annotations).
+
+    With `keep_compact`, solid blobs survive even inside a "text" region: the layout net tends
+    to call dark particles text, while what a detector picks up on real lettering is a thin
+    sliver along a stroke."""
     kept, dropped = [], []
     H, W = class_map.shape
     for d in findings:
@@ -112,5 +205,7 @@ def suppress_text(findings: list[dict], class_map, frac: float = 0.4, grow_px: i
         own = _finding_mask(d, x0, y0, cls.shape)
         text = ndi.binary_dilation(cls == 3, iterations=grow_px)
         on = float((text & own).sum()) / max(1, own.sum())
+        if on >= frac and keep_compact and own.sum() >= 30 and ndi.binary_erosion(own, iterations=2).any():
+            on = 0.0
         (dropped if on >= frac else kept).append(d)
     return kept, dropped
