@@ -124,6 +124,8 @@ def real_dirt(img: np.ndarray, t: Tones | None = None) -> tuple[np.ndarray, np.n
             continue
         tone = float(np.median(img[sl][m & interior])) if (m & interior).any() else t.bright
         d = interior & (img[sl] < tone - max(0.06, 4 * t.noise))
+        if d.sum() > 0.4 * interior.sum():
+            continue  # a pad drawn with a bright rim and a darker field: the darkness is the design
         if d.sum() >= 6:
             lab, k = ndi.label(d)
             keep = np.zeros(k + 1, bool)
@@ -137,6 +139,11 @@ def real_dirt(img: np.ndarray, t: Tones | None = None) -> tuple[np.ndarray, np.n
                 # stubs of the frame survive the erosion as thin marks on the interior's edge
                 rim = (interior & ~ndi.binary_erosion(interior, iterations=3))[sj] & cj
                 sliver = min(hh, ww) <= 3 and max(hh, ww) >= 8
+                # the pad's own inner frame is a hollow ring: big box, little ink, a hole in the middle
+                sides = int(cj[0].any()) + int(cj[-1].any()) + int(cj[:, 0].any()) + int(cj[:, -1].any())
+                hollow = ndi.binary_fill_holes(cj).sum() > 2 * cj.sum() or (sides >= 3 and cj[hh // 4 : 3 * hh // 4, ww // 4 : 3 * ww // 4].mean() < 0.05)
+                ring = cj.sum() < 0.3 * hh * ww and max(hh, ww) >= 30 and hollow
+                straight = straight or ring
                 keep[j] = cj.sum() >= 6 and not straight and not sliver and rim.sum() < 0.5 * cj.sum()
             d = keep[lab]
             dirt[sl] |= ndi.binary_dilation(d, iterations=1) & filled

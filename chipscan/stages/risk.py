@@ -86,6 +86,8 @@ def assess(findings: list[dict], class_map, pixel_size_um: float | None, window_
             r = 0.7 * (0.45 + 0.35 * jj + 0.2 * sz) * (0.6 + 0.4 * conf)
         else:  # speck
             r = sz * (0.12 + 0.88 * max(jj, 0.65 * tr)) * (0.7 + 0.3 * conf)
+        if d.get("verified") is False:
+            r *= 0.85  # no twin to compare with (unique structure): less certain it is a defect
         score = float(np.clip(100.0 * r, 0, 100))
         d.update(
             {
@@ -144,7 +146,8 @@ def suppress_text_lines(findings: list[dict], source, window: int = 160) -> tupl
         t = Tones(win)
         # contrast against the *local* background: lettering often sits on its own darker panel
         local = ndi.median_filter(win, size=41)
-        blobs = ndi.binary_closing(np.abs(win - local) > max(0.05, 4 * t.noise), iterations=1)
+        ink = np.abs(win - local) > max(0.05, 4 * t.noise)
+        blobs = ndi.binary_closing(ink, iterations=1)
         lab, n = ndi.label(blobs)
         if n < 4:
             kept.append(d)
@@ -168,7 +171,10 @@ def suppress_text_lines(findings: list[dict], source, window: int = 160) -> tupl
         # enclosed holes (outlined and closed letters); dirt has none of that structure
         mine = lab[sl] == me
         holes = ndi.label(ndi.binary_fill_holes(mine) & ~mine)[1]
-        if w0 >= 1.8 * h0 and holes >= 3:
+        # a line of characters: crossing the word's middle rows hits ink many times (strokes)
+        mid = (ink[sl] & mine)[max(0, h0 // 2 - 2) : h0 // 2 + 3]
+        crossings = int(np.median([np.count_nonzero(np.diff(r.astype(np.int8)) == 1) for r in mid])) if mid.size else 0
+        if w0 >= 1.8 * h0 and (holes >= 3 or (12 <= h0 <= 80 and crossings >= 5)):
             dropped.append(d)
             continue
         if w0 > 3 * h0:

@@ -172,7 +172,6 @@ def speck_union_map(run_dir: Path, spec: ScanSpec) -> zarr.Array:
 def extract_findings(run_dir: Path, spec: ScanSpec, source: ImageSource | None = None) -> tuple[list[dict], dict]:
     """Speck + trace findings from the stored probability maps (cheap: no network run)."""
     from chipscan.segmentation.anomaly import anomalies_from_map
-    from chipscan.segmentation.repeats import estimate_pitches, suppress_repeats
     from chipscan.stages.risk import suppress_component_shapes, suppress_text, suppress_text_lines
 
     source = source or PyramidSource(run_dir / "corrected.zarr")
@@ -180,7 +179,6 @@ def extract_findings(run_dir: Path, spec: ScanSpec, source: ImageSource | None =
     cls = zarr.open_group(str(run_dir / "layout.zarr"), mode="r")["0"]
     info: dict = {}
     out: list[dict] = []
-    pitches_cache: dict = {}
     for group, thr, merge in (("speck", spec.speck_threshold, 6), ("trace", spec.trace_threshold, 8)):
         if group == "speck":
             amap, thr = speck_union_map(run_dir, spec), 0.5
@@ -213,24 +211,12 @@ def extract_findings(run_dir: Path, spec: ScanSpec, source: ImageSource | None =
         else:
             recs, on_text = suppress_text(recs, cls, grow_px=4)
         if recs:
-            # designed things recur at the chip/reticle pitch, defects do not: a candidate whose tight
-            # surroundings are reproduced one pitch away is designed structure (corner, line end, mark)
-            if "p" not in pitches_cache:
-                pitches_cache["p"] = estimate_pitches(source)
-            pitches = pitches_cache["p"]
-            kept = []
-            for d in recs:
-                # specks: tight, so a real speck dominates its patch; trace candidates: enough context
-                # to include the corner or line end that makes a designed shape recognisable
-                strict = group == "trace" or d.get("source") == "anomaly_model"
-                half = int(max(14, np.sqrt(d["area_px"]) + 10)) if strict else int(max(6, np.sqrt(d["area_px"]) + 5))
-                # dirt on a trace leaves its patch mostly trace: only a near-identical twin means "designed".
-                # Candidates only the general anomaly model saw are judged like trace candidates.
-                # chips sit up to a few tens of px off the nominal pitch (stage placement), so search wide
-                k, _ = suppress_repeats(source, [d], pitches, half_px=half, search_px=40, match_ncc=0.85 if strict else 0.9)
-                kept += k
-            info[f"{group}_repeats_dropped"] = len(recs) - len(kept)
-            recs = kept
+            # reference check: is the candidate explained by the same spot on its twins (other
+            # chips, other cells)? designed structure is; a defect is not
+            from chipscan.stages.verify import verify
+
+            recs, explained = verify(source, recs)
+            info[f"{group}_explained_by_twins"] = len(explained)
         if group == "speck" and recs:
             recs = [_grow_on_pads(source, d, px) for d in recs]
         for d in recs:
@@ -402,7 +388,7 @@ def run_scan(spec: ScanSpec, runs_root: str | Path = ROOT / "runs", progress: Pr
         stage("components")
         insts = find_instances(cls)
         comp_recs, csum = component_errors(src, insts, px, z_min=spec.component_z, progress=sub("components"), class_map=cls, report_missing=spec.component_missing)
-        comp_recs, csum["twin_dropped"] = twin_check_components(src, comp_recs)
+        comp_recs, csum["twin_dropped"] = _verify_components(src, comp_recs)
         comp_recs, on_text = suppress_text(comp_recs, cls)
         csum["on_text_dropped"] = len(on_text)
         done("components", **csum)
@@ -433,6 +419,13 @@ def run_scan(spec: ScanSpec, runs_root: str | Path = ROOT / "runs", progress: Pr
         save_meta()
         raise
     return run_dir
+
+
+def _verify_components(source: ImageSource, recs: list[dict]) -> tuple[list[dict], int]:
+    from chipscan.stages.verify import verify
+
+    kept, explained = verify(source, recs)
+    return kept, len(explained)
 
 
 def twin_check_components(source: ImageSource, recs: list[dict]) -> tuple[list[dict], int]:
@@ -471,7 +464,7 @@ def reprocess(run_dir: Path) -> dict:
     cls = zarr.open_group(str(run_dir / "layout.zarr"), mode="r")["0"]
     insts = find_instances(cls)
     comp_recs, csum = component_errors(src, insts, px, z_min=spec.component_z, class_map=cls, report_missing=spec.component_missing)
-    comp_recs, csum["twin_dropped"] = twin_check_components(src, comp_recs)
+    comp_recs, csum["twin_dropped"] = _verify_components(src, comp_recs)
     comp_recs, on_text = suppress_text(comp_recs, cls)
     csum["on_text_dropped"] = len(on_text)
     st_recs, info = extract_findings(run_dir, spec, src)
