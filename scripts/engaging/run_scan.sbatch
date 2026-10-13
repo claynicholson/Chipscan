@@ -9,7 +9,7 @@
 #SBATCH --mem=96G
 #SBATCH -t 04:00:00
 #SBATCH -o /orcd/pool/007/clayn/logs/chipscan.%j.log
-set -euo pipefail
+set -eo pipefail  # no -u: conda activation scripts read unset variables
 IMAGE="$1"; NAME="${2:-$(basename "${IMAGE%.*}")}"; PX="${3:-0.814}"
 POOL=/orcd/pool/007/clayn
 module load miniforge
