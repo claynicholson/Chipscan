@@ -54,6 +54,8 @@ class ScanSpec:
     speck_threshold: float = 0.35
     trace_threshold: float = 0.5
     component_z: float = 12.0
+    report_traces: bool = False
+    """Trace-error findings are off until the detector is reliable (on C1/B2 nearly all were designed corners)."""
     component_missing: bool = False  # missing-member reports need regular lines; off until validated per design
     min_area_px: int = 4
     layout_model: str = str(ROOT / "models" / "layout_v1.pt")
@@ -179,7 +181,8 @@ def extract_findings(run_dir: Path, spec: ScanSpec, source: ImageSource | None =
     cls = zarr.open_group(str(run_dir / "layout.zarr"), mode="r")["0"]
     info: dict = {}
     out: list[dict] = []
-    for group, thr, merge in (("speck", spec.speck_threshold, 6), ("trace", spec.trace_threshold, 8)):
+    groups = [("speck", spec.speck_threshold, 6)] + ([("trace", spec.trace_threshold, 8)] if spec.report_traces else [])
+    for group, thr, merge in groups:
         if group == "speck":
             amap, thr = speck_union_map(run_dir, spec), 0.5
         else:
