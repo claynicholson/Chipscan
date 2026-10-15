@@ -105,6 +105,7 @@ def reference_residual(source: ImageSource, d: dict, context: int = 256, min_twi
         return {"n_twins": 0, "residual": None, "frac": None}
     twins = find_twins_slack(source, x0, y0, size, min_dist_px=max(size, 256))
     res_maps = []
+    twins_al = []
     for tx, ty, _ in twins:
         if tx < 0 or ty < 0 or tx + size > W or ty + size > H:
             continue
@@ -116,17 +117,56 @@ def reference_residual(source: ImageSource, d: dict, context: int = 256, min_twi
             continue
         tw = ndi.shift(tw, sh, order=1, mode="nearest")
         # match brightness (exposure differs from frame to frame)
-        a, c = np.polyfit(tw[~own].ravel(), img[~own].ravel(), 1) if (~own).sum() > 50 else (1.0, 0.0)
+        a, c = np.polyfit(tw[~own].ravel(), img[~own].ravel(), 1) if (~own).sum() > 50 and tw[~own].std() > 1e-3 else (1.0, 0.0)
         tw = np.clip(a * tw + c, 0, 1)
         lo = ndi.grey_erosion(tw, size=(3, 3))
         hi = ndi.grey_dilation(tw, size=(3, 3))
         res_maps.append(np.maximum(0.0, np.maximum(lo - img, img - hi)))
+        twins_al.append(tw)
     if len(res_maps) < min_twins:
         return {"n_twins": len(res_maps), "residual": None, "frac": None}
     r = np.median(np.stack(res_maps), axis=0)
     inside = r[own]
-    return {"n_twins": len(res_maps), "residual": float(inside.mean()), "frac": float((inside > 0.04).mean())}
+    out = {"n_twins": len(res_maps), "residual": float(inside.mean()), "frac": float((inside > 0.04).mean())}
+    out["ghost"] = ghost_fit(img, np.median(np.stack(twins_al), axis=0), own)
+    return out
 
+
+def ghost_fit(img: np.ndarray, ref: np.ndarray, own: np.ndarray, max_shift: int = 30) -> dict | None:
+    """Is the candidate a stitching ghost?
+
+    Across a blend band the mosaic goes from frame A (the clean scene, = ref) through a mix to
+    frame B (the scene displaced by the misregistration d).  So each row (for a horizontal seam;
+    each column for a vertical one) should be  (1-a)*ref + a*shift(ref, d)  with its own a in
+    [0, 1].  A ghost when one d explains the window far better than the clean reference does and
+    the mix actually ramps (a goes from ~0 to substantially >0 across the window)."""
+    e = img - ref
+    base = float(np.sqrt(np.mean(e**2)))
+    if base < 0.015:
+        return None
+    best = None
+    for axis in (0, 1):
+        E = e if axis == 0 else e.T
+        R = ref if axis == 0 else ref.T
+        for dd in list(range(-max_shift, -2)) + list(range(3, max_shift + 1)):
+            V = np.roll(R, dd, axis=0) - R
+            den = (V * V).sum(1)
+            a = np.clip((E * V).sum(1) / np.maximum(den, 1e-6), 0.0, 1.0)
+            a = ndi.median_filter(a, size=9, mode="nearest")  # the blend weight varies smoothly
+            res = float(np.sqrt(np.mean((E - a[:, None] * V) ** 2)))
+            if best is None or res < best[0]:
+                best = (res, dd, axis, a)
+    res, dd, axis, a = best
+    gain = 1.0 - res / base
+    ramp = float(np.percentile(a, 90) - np.percentile(a, 10))
+    # a blend band is a monotonic ramp of the mixing weight across the seam
+    idx = np.arange(len(a))
+    from scipy.stats import spearmanr
+
+    mono = abs(float(spearmanr(a, idx).statistic)) if a.std() > 1e-6 else 0.0
+    if gain >= 0.3 and ramp >= 0.5 and mono >= 0.8:
+        return {"shift_px": int(dd), "axis": "y" if axis == 0 else "x", "explained": round(gain, 2), "ramp": round(ramp, 2), "monotone": round(mono, 2)}
+    return None
 
 def verify(source: ImageSource, recs: list[dict], min_residual: float = 0.018, min_frac: float = 0.2) -> tuple[list[dict], list[dict]]:
     """Split into (kept, explained). Candidates without enough twins are kept, marked unverified."""
@@ -135,6 +175,10 @@ def verify(source: ImageSource, recs: list[dict], min_residual: float = 0.018, m
         r = reference_residual(source, d)
         d["n_twins"] = r["n_twins"]
         d["ref_residual"] = r["residual"]
+        if r.get("ghost"):
+            d["stitch_ghost"] = r["ghost"]
+            explained.append(d)  # two blended frames, not a defect
+            continue
         if r["residual"] is None:
             d["verified"] = False
             kept.append(d)

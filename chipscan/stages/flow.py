@@ -219,7 +219,8 @@ def extract_findings(run_dir: Path, spec: ScanSpec, source: ImageSource | None =
             from chipscan.stages.verify import verify
 
             recs, explained = verify(source, recs)
-            info[f"{group}_explained_by_twins"] = len(explained)
+            info[f"{group}_explained_by_twins"] = sum(1 for d in explained if not d.get("stitch_ghost"))
+            info[f"{group}_stitch_ghosts"] = sum(1 for d in explained if d.get("stitch_ghost"))
         if group == "speck" and recs:
             recs = [_grow_on_pads(source, d, px) for d in recs]
         for d in recs:
@@ -428,6 +429,9 @@ def _verify_components(source: ImageSource, recs: list[dict]) -> tuple[list[dict
     from chipscan.stages.verify import verify
 
     kept, explained = verify(source, recs)
+    for d in explained:
+        if d.get("stitch_ghost"):
+            print(f"component finding at {d['centroid_px']} is a stitching ghost: {d['stitch_ghost']}", flush=True)
     return kept, len(explained)
 
 
