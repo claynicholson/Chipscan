@@ -393,10 +393,10 @@ sl-range::part(form-control-help-text) { font-size: 11.5px; color: var(--text-3)
 }
 body { background: var(--bg); color: var(--text); letter-spacing: -.005em; }
 
-/* header: frosted glass, logo + product name */
+/* header: logo + product name. No backdrop-filter here or on panes: it makes them the containing
+   block for the hoisted (position: fixed) dropdowns, which then clip to the header's height */
 .appbar {
-  background: rgba(255, 255, 255, .72);
-  backdrop-filter: saturate(180%) blur(20px); -webkit-backdrop-filter: saturate(180%) blur(20px);
+  background: #fbfbfd;
   border-bottom: 1px solid var(--border);
 }
 .brand { gap: 10px; }
@@ -405,7 +405,7 @@ body { background: var(--bg); color: var(--text); letter-spacing: -.005em; }
 .runinfo .meta { background: var(--surface-3); border-color: transparent; color: var(--text-2); }
 
 /* panes and cards: white, soft shadow, generous radius */
-.pane { background: var(--surface); backdrop-filter: blur(20px); -webkit-backdrop-filter: blur(20px); }
+.pane { background: var(--surface); }
 .pane-left { border-right: 1px solid var(--border); }
 .pane-right { border-left: 1px solid var(--border); }
 .pane-section { border-bottom: 1px solid var(--border); }
@@ -434,7 +434,7 @@ body { background: var(--bg); color: var(--text); letter-spacing: -.005em; }
 /* image stage: the scan sits on a neutral canvas */
 .stage { background: #e8e8ed; }
 .viewer { background: #e8e8ed; }
-.statusbar { background: rgba(255, 255, 255, .8); backdrop-filter: blur(20px); -webkit-backdrop-filter: blur(20px); border-top: 1px solid var(--border); color: var(--text-2); }
+.statusbar { background: #fbfbfd; border-top: 1px solid var(--border); color: var(--text-2); }
 .zoom-val { color: var(--text); }
 .navigator-host { background: #e8e8ed; border: none; border-radius: 10px; }
 .defect-hero img { background: #e8e8ed; border: none; border-radius: 12px; }
@@ -451,3 +451,8 @@ code { background: var(--surface-3); color: var(--text); }
 .welcome { background: var(--bg); }
 .sw-trace { background: rgba(0, 113, 227, .7); } .sw-comp { background: rgba(255, 55, 95, .8); } .sw-text { background: rgba(52, 199, 89, .75); }
 .list, .pane-right { scrollbar-color: rgba(0, 0, 0, .2) transparent; }
+
+/* scan picker: name + finding count, older experiment runs grouped below */
+.run-select::part(listbox) { max-height: min(60vh, 480px); }
+.run-select sl-option::part(base) { padding-block: 6px; }
+.run-select small[slot="suffix"] { color: var(--text-3); font-variant-numeric: tabular-nums; }

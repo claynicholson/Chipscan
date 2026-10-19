@@ -56,10 +56,23 @@
   }
   const fail = (e) => notify(e.message || String(e), "danger", "exclamation-octagon");
 
+  function renderRunOptions(sel) {
+    // full scans first; earlier single-model experiment runs grouped underneath
+    const opt = (r) => {
+      const i = runs.indexOf(r);
+      // the select shows an option's unslotted text, so only the name goes there
+      return `<sl-option value="r${i}">${esc(r.name)}<small slot="suffix">${r.n_defects.toLocaleString()} found</small></sl-option>`;
+    };
+    const scans = runs.filter(r => r.scan_run), other = runs.filter(r => !r.scan_run);
+    let html = scans.length ? `<small>Scans</small>${scans.map(opt).join("")}` : "";
+    if (other.length) html += `${scans.length ? "<sl-divider></sl-divider>" : ""}<small>Earlier experiments</small>${other.map(opt).join("")}`;
+    sel.innerHTML = html;
+  }
+
   async function loadRuns(prefer) {
     runs = await api("/api/runs");
     const sel = $("run");
-    sel.innerHTML = runs.map((r, i) => `<sl-option value="r${i}">${esc(r.name)}<span slot="suffix" class="mono muted">${r.n_defects.toLocaleString()}</span></sl-option>`).join("");
+    renderRunOptions(sel);
     $("welcome").classList.toggle("hidden", runs.length > 0);
     if (!runs.length) return;
     const wanted = prefer || new URLSearchParams(location.search).get("run");
@@ -602,7 +615,7 @@
     const cur = run && run.name;
     runs = await api("/api/runs");
     const sel = $("run");
-    sel.innerHTML = runs.map((r, i) => `<sl-option value="r${i}">${esc(r.name)}<span slot="suffix" class="mono muted">${r.n_defects.toLocaleString()}</span></sl-option>`).join("");
+    renderRunOptions(sel);
     $("welcome").classList.toggle("hidden", runs.length > 0);
     await sel.updateComplete;
     if (cur && runs.some(r => r.name === cur)) { sel.value = `r${runs.findIndex(r => r.name === cur)}`; run = runs.find(r => r.name === cur); }

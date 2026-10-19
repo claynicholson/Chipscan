@@ -515,6 +515,14 @@ def create_app(config_paths: list[Path], db_path: Path | None = None, runs_root:
     app = FastAPI(title="chipscan viewer")
     app.mount("/static", StaticFiles(directory=str(STATIC)), name="static")
 
+    @app.middleware("http")
+    async def _revalidate_static(request, call_next):
+        # the UI changes with the code: browsers must revalidate (ETag) instead of using a stale copy
+        resp = await call_next(request)
+        if request.url.path == "/" or request.url.path.startswith("/static/"):
+            resp.headers["Cache-Control"] = "no-cache"
+        return resp
+
     def get_run(name: str) -> Run:
         if name not in runs:
             raise HTTPException(404, f"unknown run {name}")
