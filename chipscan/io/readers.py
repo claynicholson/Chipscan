@@ -123,6 +123,17 @@ class PyramidSource(_LevelMixin):
         self.pixel_size_um: float | None = attrs.get("pixel_size_um")
         self.attrs = attrs
 
+    def __getstate__(self):
+        # pickled for worker processes: they reopen the store from its path
+        st = {k: v for k, v in self.__dict__.items() if k not in ("group", "_levels")}
+        return st
+
+    def __setstate__(self, st):
+        pixel_size = st.get("pixel_size_um")
+        self.__init__(st["path"])
+        self.__dict__.update(st)
+        self.pixel_size_um = pixel_size
+
     @property
     def shape(self) -> tuple[int, int]:
         return tuple(self._levels[0].shape)  # type: ignore[return-value]

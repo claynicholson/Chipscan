@@ -420,7 +420,7 @@ class Jobs:
         self.lock = threading.Lock()
         threading.Thread(target=self._worker, daemon=True).start()
 
-    def submit(self, spec) -> dict:
+    def submit(self, spec, resume: bool = False) -> dict:
         from chipscan.stages.flow import STAGES
 
         jid = f"{spec.name}-{int(time.time())}"
@@ -435,7 +435,8 @@ class Jobs:
         }
         with self.lock:
             self.jobs[jid] = job
-        self.q.put((jid, spec))
+        job["resumed"] = resume
+        self.q.put((jid, spec, resume))
         return job
 
     def _progress(self, jid: str):
@@ -458,12 +459,12 @@ class Jobs:
         from chipscan.stages.flow import run_scan
 
         while True:
-            jid, spec = self.q.get()
+            jid, spec, resume = self.q.get()
             with self.lock:
                 self.jobs[jid]["status"] = "running"
                 self.jobs[jid]["started"] = time.time()
             try:
-                run_dir = run_scan(spec, self.runs_root, self._progress(jid))
+                run_dir = run_scan(spec, self.runs_root, self._progress(jid), resume=resume)
                 self.on_done(run_dir)
                 with self.lock:
                     self.jobs[jid]["status"] = "done"
@@ -473,6 +474,32 @@ class Jobs:
                     self.jobs[jid]["error"] = f"{type(e).__name__}: {e}"
             with self.lock:
                 self.jobs[jid]["finished"] = time.time()
+
+    def resume_interrupted(self) -> list[str]:
+        """Scans whose server stopped mid-run (status still "running") continue where they were,
+        with today's models for the stages they have not reached."""
+        from dataclasses import fields
+
+        from chipscan.stages.flow import ScanSpec
+
+        names = []
+        for meta_p in sorted(self.runs_root.glob("*/scan.json"), key=lambda q: q.stat().st_mtime):
+            try:
+                meta = json.loads(meta_p.read_text())
+            except Exception:
+                continue
+            if meta.get("status") != "running":
+                continue
+            fresh = ScanSpec(name="", image="")
+            known = {f.name for f in fields(ScanSpec)}
+            spec = ScanSpec(**{k: v for k, v in meta.get("spec", {}).items() if k in known})
+            done = {k for k, v in meta.get("stages", {}).items() if v.get("seconds") is not None}
+            for key, attr in (("specks", "speck_model"), ("specks", "anomaly_model"), ("traces", "trace_model"), ("layout", "layout_model")):
+                if key not in done:
+                    setattr(spec, attr, getattr(fresh, attr))
+            self.submit(spec, resume=True)
+            names.append(spec.name)
+        return names
 
     def list(self) -> list[dict]:
         with self.lock:
@@ -512,6 +539,9 @@ def create_app(config_paths: list[Path], db_path: Path | None = None, runs_root:
         runs[r.name] = r
 
     jobs = Jobs(runs_root, add_run)
+    resumed = jobs.resume_interrupted()
+    if resumed:
+        print(f"resuming interrupted scans: {', '.join(resumed)}", flush=True)
     app = FastAPI(title="chipscan viewer")
     app.mount("/static", StaticFiles(directory=str(STATIC)), name="static")
 

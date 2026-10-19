@@ -144,10 +144,12 @@ def suppress_text_lines(findings: list[dict], source, window: int = 160) -> tupl
     for d in findings:
         cx, cy = (int(round(v)) for v in d["centroid_px"])
         x0, y0 = cx - window, cy - window
-        win = source.read_region(x0, y0, cx + window, cy + window).astype(np.float32) / 255.0
+        win8 = np.ascontiguousarray(source.read_region(x0, y0, cx + window, cy + window), dtype=np.uint8)
+        win = win8.astype(np.float32) / 255.0
         t = Tones(win)
         # contrast against the *local* background: lettering often sits on its own darker panel
-        local = ndi.median_filter(win, size=41)
+        # (OpenCV's histogram median: ~1000x faster than scipy's at this size)
+        local = cv2.medianBlur(win8, 41).astype(np.float32) / 255.0
         ink = np.abs(win - local) > max(0.05, 4 * t.noise)
         blobs = ndi.binary_closing(ink, iterations=1)
         lab, n = ndi.label(blobs)

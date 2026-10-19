@@ -176,85 +176,136 @@ def speck_union_map(run_dir: Path, spec: ScanSpec) -> zarr.Array:
 
 
 # ----------------------------------------------------------------------------- findings from maps
-def extract_findings(run_dir: Path, spec: ScanSpec, source: ImageSource | None = None) -> tuple[list[dict], dict]:
+# ----------------------------------------------------------------------------- candidate checks (parallel)
+_CHK: dict = {}
+
+
+def _check_init(source, run_dir: str, spec_d: dict) -> None:
+    """Per worker: open the scan, the layout and the maps once."""
+    import torch  # noqa: F401  (load torch before pyvips users on macOS)
+
+    rd = Path(run_dir)
+    spec = ScanSpec(**spec_d)
+    maps = {}
+    for name in ("speck", "paddirt", "reference"):
+        if (rd / f"{name}.zarr").exists() and (name != "reference" or spec.reference_threshold > 0):
+            maps[name] = zarr.open_group(str(rd / f"{name}.zarr"), mode="r")["0"]
+    _CHK.update(source=source, spec=spec, cls=zarr.open_group(str(rd / "layout.zarr"), mode="r")["0"], maps=maps)
+
+
+def _check_one(item: tuple[dict, str]) -> tuple[dict, str | None]:
+    """Run every per-candidate filter on one candidate. Returns (candidate, None) if it is kept,
+    else (candidate, reason).  Cheap class-map tests come first so most candidates (text) leave
+    before any image is read."""
+    from chipscan.stages.risk import suppress_component_shapes, suppress_text, suppress_text_lines
+    from chipscan.stages.verify import verify
+
+    d, group = item
+    src, spec, cls, maps = _CHK["source"], _CHK["spec"], _CHK["cls"], _CHK["maps"]
+    px = spec.pixel_size_um or getattr(src, "pixel_size_um", None) or 1.0
+    if group == "trace":
+        if not suppress_text([d], cls, grow_px=4)[0]:
+            return d, "on_text"
+    else:
+        # where did the candidate come from? anomaly-model-only finds are the least specific
+        b = d["bbox_px"]
+        ys, xs = slice(int(b["y0"]), int(b["y1"])), slice(int(b["x0"]), int(b["x1"]))
+        peak = {k: float(np.asarray(a[ys, xs]).max()) for k, a in maps.items()}
+        net = peak.get("speck", 0.0) / 255.0
+        rule = peak.get("paddirt", 0.0) / 255.0
+        rr = peak.get("reference", 0.0) / 1000.0
+        d["source"] = "speck_net" if net >= spec.speck_threshold else ("pad_rule" if rule >= 0.5 else ("reference" if rr >= spec.reference_threshold else "anomaly_model"))
+        # small specks sit right on letter strokes the layout net only partly calls text: wide margin.
+        # Compact blobs survive inside "text" for the speck net and the pad rule (the layout net calls
+        # dark particles text); the anomaly model fires on letters, so its finds do not
+        if not suppress_text([d], cls, grow_px=10, keep_compact=d["source"] != "anomaly_model")[0]:
+            return d, "on_text"
+        if d["source"] == "anomaly_model" and d["area_px"] > 3000:
+            return d, "anomaly_too_big"
+        # the scan's own border (black fill past the last camera frame / from straightening) is not dirt
+        if _on_border(src, d):
+            return d, "scan_border"
+        # the reference residual alone speaks only for specks isolated on flat field; next to a
+        # junction pad or a trace corner it is more often a design variant than dust
+        if d["source"] == "reference" and not _isolated(src, d):
+            return d, "reference_not_isolated"
+        if not suppress_component_shapes([d], cls)[0]:
+            return d, "component_shape"
+        if not suppress_text_lines([d], src)[0]:
+            return d, "lettering"
+    # reference check: is the candidate explained by the same spot on its twins (other chips,
+    # other cells)? designed structure is; a defect is not
+    kept, explained = verify(src, [d])
+    if explained:
+        return d, "stitch_ghost" if d.get("stitch_ghost") else "explained_by_twins"
+    if group == "speck":
+        d = _grow_on_pads(src, d, px)
+    return d, None
+
+
+def check_candidates(source: ImageSource, run_dir: Path, spec: ScanSpec, items: list[tuple[dict, str]], workers: int | None = None, progress=None) -> list[tuple[dict, str | None]]:
+    """`_check_one` over all candidates, on all cores (results in input order)."""
+    import os
+    from concurrent.futures import ProcessPoolExecutor
+
+    args = (source, str(run_dir), asdict(spec))
+    workers = workers if workers is not None else max(1, (os.cpu_count() or 4) - 2)
+    if workers <= 1 or len(items) < 200:
+        _check_init(*args)
+        out = []
+        for i, it in enumerate(items):
+            out.append(_check_one(it))
+            if progress and i % 50 == 0:
+                progress(i + 1, len(items))
+        return out
+    out = []
+    with ProcessPoolExecutor(max_workers=workers, initializer=_check_init, initargs=args) as ex:
+        for i, r in enumerate(ex.map(_check_one, items, chunksize=8)):
+            out.append(r)
+            if progress and i % 50 == 0:
+                progress(i + 1, len(items))
+    return out
+
+
+def extract_findings(run_dir: Path, spec: ScanSpec, source: ImageSource | None = None, workers: int | None = None, progress=None) -> tuple[list[dict], dict]:
     """Speck + trace findings from the stored probability maps (cheap: no network run)."""
     from chipscan.segmentation.anomaly import anomalies_from_map
-    from chipscan.stages.risk import suppress_component_shapes, suppress_text, suppress_text_lines
 
+    run_dir = Path(run_dir)
     source = source or PyramidSource(run_dir / "corrected.zarr")
     px = spec.pixel_size_um or getattr(source, "pixel_size_um", None) or 1.0
-    cls = zarr.open_group(str(run_dir / "layout.zarr"), mode="r")["0"]
     info: dict = {}
     out: list[dict] = []
     dropped: list[tuple[dict, str]] = []
     groups = [("speck", spec.speck_threshold, 6)] + ([("trace", spec.trace_threshold, 8)] if spec.report_traces else [])
+    items: list[tuple[dict, str]] = []
     for group, thr, merge in groups:
         if group == "speck":
             amap, thr = speck_union_map(run_dir, spec), 0.5
         else:
             amap = zarr.open_group(str(run_dir / f"{group}.zarr"), mode="r")["0"]
         recs = anomalies_from_map(amap, thr, spec.min_area_px, px, merge_px=merge, solid=True)
-        n0 = len(recs)
+        info[f"{group}_raw"] = len(recs)
+        items += [(d, group) for d in recs]
+    results = check_candidates(source, run_dir, spec, items, workers=workers, progress=progress)
+    for (d, reason), (_, group) in zip(results, items, strict=True):
+        if reason:
+            dropped.append((d, reason))
+            continue
+        d["group"] = group
+        d["kind"] = group
+        d["class"] = group
+        if group == "speck" and (d.get("source") == "pad_rule" or d.get("grown_on_pad")):
+            d["class"] = "probe_mark"  # dark mark inside a bond/probe pad: usually the probe needle's scrub
+        out.append(d)
+    for group, _, _ in groups:
+        reasons = [r for (d, r), (_, g) in zip(results, items, strict=True) if g == group and r]
+        info[f"{group}_on_text"] = reasons.count("on_text")
+        info[f"{group}_explained_by_twins"] = reasons.count("explained_by_twins")
+        info[f"{group}_stitch_ghosts"] = reasons.count("stitch_ghost")
         if group == "speck":
-            # where did each candidate come from? anomaly-model-only finds are the least specific
-            sp_net = zarr.open_group(str(run_dir / "speck.zarr"), mode="r")["0"]
-            pad = zarr.open_group(str(run_dir / "paddirt.zarr"), mode="r")["0"] if (run_dir / "paddirt.zarr").exists() else None
-            ref = zarr.open_group(str(run_dir / "reference.zarr"), mode="r")["0"] if spec.reference_threshold > 0 and (run_dir / "reference.zarr").exists() else None
-            for d in recs:
-                b = d["bbox_px"]
-                ys, xs = slice(int(b["y0"]), int(b["y1"])), slice(int(b["x0"]), int(b["x1"]))
-                net = float(np.asarray(sp_net[ys, xs]).max()) / 255.0
-                rule = float(np.asarray(pad[ys, xs]).max()) / 255.0 if pad is not None else 0.0
-                rr = float(np.asarray(ref[ys, xs]).max()) / 1000.0 if ref is not None else 0.0
-                d["source"] = "speck_net" if net >= spec.speck_threshold else ("pad_rule" if rule >= 0.5 else ("reference" if rr >= spec.reference_threshold else "anomaly_model"))
-            # the scan's own border (black fill past the last camera frame / from straightening) is not dirt
-            edge = [d for d in recs if _on_border(source, d)]
-            recs = [d for d in recs if not any(d is e for e in edge)]
-            dropped += [(d, "scan_border") for d in edge]
-            # the reference residual alone speaks only for specks isolated on flat field; next to a
-            # junction pad or a trace corner it is more often a design variant than dust
-            lone = [d for d in recs if d["source"] != "reference" or _isolated(source, d)]
-            dropped += [(d, "reference_not_isolated") for d in recs if d["source"] == "reference" and not any(d is e for e in lone)]
-            recs = lone
-            big = [d for d in recs if d["source"] == "anomaly_model" and d["area_px"] > 3000]
-            recs = [d for d in recs if not (d["source"] == "anomaly_model" and d["area_px"] > 3000)]
-            dropped += [(d, "anomaly_too_big") for d in big]
-        # small specks sit right on letter strokes the layout net only partly calls text: wider margin
-        if group == "speck":
-            # compact blobs survive inside "text" for the speck net and the pad rule (the layout net
-            # calls dark particles text); the anomaly model fires on letters, so its finds do not
-            a, on_a = suppress_text([d for d in recs if d.get("source") != "anomaly_model"], cls, grow_px=10, keep_compact=True)
-            b, on_b = suppress_text([d for d in recs if d.get("source") == "anomaly_model"], cls, grow_px=10, keep_compact=False)
-            recs, on_text = a + b, on_a + on_b
-            dropped += [(d, "on_text") for d in on_text]
-            recs, is_comp = suppress_component_shapes(recs, cls)
-            dropped += [(d, "component_shape") for d in is_comp]
-            info["speck_is_component"] = len(is_comp)
-            recs, glyphs = suppress_text_lines(recs, source)
-            dropped += [(d, "lettering") for d in glyphs]
-            info["speck_text_lines"] = len(glyphs)
-        else:
-            recs, on_text = suppress_text(recs, cls, grow_px=4)
-        if recs:
-            # reference check: is the candidate explained by the same spot on its twins (other
-            # chips, other cells)? designed structure is; a defect is not
-            from chipscan.stages.verify import verify
-
-            recs, explained = verify(source, recs)
-            dropped += [(d, "stitch_ghost" if d.get("stitch_ghost") else "explained_by_twins") for d in explained]
-            info[f"{group}_explained_by_twins"] = sum(1 for d in explained if not d.get("stitch_ghost"))
-            info[f"{group}_stitch_ghosts"] = sum(1 for d in explained if d.get("stitch_ghost"))
-        if group == "speck" and recs:
-            recs = [_grow_on_pads(source, d, px) for d in recs]
-        for d in recs:
-            d["group"] = group
-            d["kind"] = group
-            d["class"] = group
-            if group == "speck" and (d.get("source") == "pad_rule" or d.get("grown_on_pad")):
-                d["class"] = "probe_mark"  # dark mark inside a bond/probe pad: usually the probe needle's scrub
-        info[f"{group}_raw"] = n0
-        info[f"{group}_on_text"] = len(on_text)
-        out += recs
+            info["speck_is_component"] = reasons.count("component_shape")
+            info["speck_text_lines"] = reasons.count("lettering")
     # one physical thing seen by both nets: keep the more confident
     specks = [d for d in out if d["group"] == "speck"]
     traces = [d for d in out if d["group"] == "trace"]
@@ -359,7 +410,9 @@ def _grow_on_pads(source: ImageSource, d: dict, px: float, pad: int = 160) -> di
 
 
 # ----------------------------------------------------------------------------- the flow
-def run_scan(spec: ScanSpec, runs_root: str | Path = ROOT / "runs", progress: Progress = _noop) -> Path:
+def run_scan(spec: ScanSpec, runs_root: str | Path = ROOT / "runs", progress: Progress = _noop, resume: bool = False) -> Path:
+    """The whole flow. With `resume`, stages an earlier (interrupted) run of this name finished are
+    kept and the flow continues from the first unfinished one."""
     from chipscan.io.pyramid import build_pyramid
     from chipscan.stages.components import component_errors, find_instances
     from chipscan.stages.nets import TiledNet
@@ -370,6 +423,20 @@ def run_scan(spec: ScanSpec, runs_root: str | Path = ROOT / "runs", progress: Pr
     run_dir.mkdir(parents=True, exist_ok=True)
     meta: dict = {"spec": asdict(spec), "stages": {}, "started": time.time(), "status": "running"}
     meta_p = run_dir / "scan.json"
+    prev: dict = {}
+    if resume and meta_p.exists():
+        old = json.loads(meta_p.read_text())
+        prev = {k: v for k, v in old.get("stages", {}).items() if v.get("seconds") is not None}
+        meta["started"] = old.get("started", meta["started"])
+        meta["resumed"] = time.time()
+
+    def finished(key: str, *outputs: str) -> bool:
+        """Done in the interrupted run (and its outputs are there): keep it."""
+        if key in prev and all((run_dir / o).exists() for o in outputs):
+            meta["stages"][key] = prev[key]
+            progress(key, 1.0, dict(STAGES)[key])
+            return True
+        return False
 
     def save_meta():
         meta_p.write_text(json.dumps(meta, indent=2, default=str))
@@ -392,41 +459,52 @@ def run_scan(spec: ScanSpec, runs_root: str | Path = ROOT / "runs", progress: Pr
 
     try:
         # 1. ingest ------------------------------------------------------------
-        stage("ingest")
         img = Path(spec.image)
-        if img.suffix == ".zarr" or (img.is_dir() and (img / "zarr.json").exists()):
-            raw = PyramidSource(img)
+        is_zarr = img.suffix == ".zarr" or (img.is_dir() and (img / "zarr.json").exists())
+        if finished("ingest", *(() if is_zarr else ("raw.zarr",))):
+            raw = PyramidSource(img if is_zarr else run_dir / "raw.zarr")
+            px = spec.pixel_size_um or prev["ingest"].get("pixel_size_um") or raw.pixel_size_um or 1.0
         else:
-            raw = build_pyramid(img, run_dir / "raw.zarr", spec.pixel_size_um)
-        px = spec.pixel_size_um or raw.pixel_size_um or 1.0
+            stage("ingest")
+            raw = PyramidSource(img) if is_zarr else build_pyramid(img, run_dir / "raw.zarr", spec.pixel_size_um)
+            px = spec.pixel_size_um or raw.pixel_size_um or 1.0
         spec.pixel_size_um = px
         meta["spec"]["pixel_size_um"] = px
         H, W = raw.shape
-        done("ingest", width=W, height=H, pixel_size_um=px)
+        if "seconds" not in meta["stages"]["ingest"]:
+            done("ingest", width=W, height=H, pixel_size_um=px)
 
         # 2. straighten + tiling --------------------------------------------------
-        stage("straighten")
-        if spec.straighten:
+        if finished("straighten", "corrected.zarr"):
+            src = PyramidSource(run_dir / "corrected.zarr")
+        elif spec.straighten:
+            stage("straighten")
             src, rep = straighten(raw, run_dir / "corrected.zarr", progress=sub("straighten"))
             done("straighten", angle_deg=rep.angle_deg, seams=rep.tiles.get("found"), frame_px=rep.tiles.get("period_px"), matrix_out_to_in=rep.matrix_out_to_in)
         else:
+            stage("straighten")
             src, rep = straighten(raw, run_dir / "corrected.zarr", angle_deg=0.0, fix_seams=False, progress=sub("straighten"))
             done("straighten", angle_deg=0.0, seams=False)
         src.pixel_size_um = px
 
         # 3. layout -----------------------------------------------------------------
-        stage("layout")
-        lg, cls = _new_map(run_dir / "layout.zarr", src.shape)
-        comp = lg.create_array("component_prob", shape=src.shape, chunks=(1024, 1024), dtype="uint8", fill_value=0)
-        TiledNet(spec.layout_model, spec.device).run(src, (cls, comp), progress=sub("layout"))
-        design_info = {}
-        if spec.gds:
-            design_info = _apply_design(spec, src, cls, px)
-        _label_levels(lg)
-        done("layout", **design_info)
+        if finished("layout", "layout.zarr"):
+            cls = zarr.open_group(str(run_dir / "layout.zarr"), mode="r")["0"]
+        else:
+            stage("layout")
+            lg, cls = _new_map(run_dir / "layout.zarr", src.shape)
+            comp = lg.create_array("component_prob", shape=src.shape, chunks=(1024, 1024), dtype="uint8", fill_value=0)
+            TiledNet(spec.layout_model, spec.device).run(src, (cls, comp), progress=sub("layout"))
+            design_info = {}
+            if spec.gds:
+                design_info = _apply_design(spec, src, cls, px)
+            _label_levels(lg)
+            done("layout", **design_info)
 
         # 4/5. detectors ------------------------------------------------------------
         for key, model, group in (("specks", spec.speck_model, "speck"), ("traces", spec.trace_model, "trace")):
+            if finished(key, f"{group}.zarr"):
+                continue
             stage(key)
             g, arr = _new_map(run_dir / f"{group}.zarr", src.shape)
             TiledNet(model, spec.device).run(src, arr, progress=(lambda i, n, key=key: progress(key, 0.5 * i / max(n, 1), dict(STAGES)[key])) if key == "specks" else sub(key))
@@ -435,7 +513,12 @@ def run_scan(spec: ScanSpec, runs_root: str | Path = ROOT / "runs", progress: Pr
                     ga, aa = _new_map(run_dir / "anomaly.zarr", src.shape)
                     TiledNet(spec.anomaly_model, spec.device).run(src, aa, progress=lambda i, n, key=key: progress(key, 0.5 + 0.4 * i / max(n, 1), dict(STAGES)[key]))
                 gp, pa = _new_map(run_dir / "paddirt.zarr", src.shape)
-                pad_dirt_map(src, pa, progress=lambda i, n, key=key: progress(key, 0.9 + 0.1 * i / max(n, 1), dict(STAGES)[key]))
+                pad_dirt_map(src, pa, progress=lambda i, n, key=key: progress(key, 0.9 + 0.05 * i / max(n, 1), dict(STAGES)[key]))
+                if spec.reference_threshold > 0:
+                    # every tile against its twins: lone dust on flat field (all cores)
+                    from chipscan.stages.reference import reference_map
+
+                    reference_map(run_dir / "corrected.zarr", run_dir / "reference.zarr", progress=lambda i, n, key=key: progress(key, 0.95 + 0.05 * i / max(n, 1), dict(STAGES)[key]))
             done(key)
         hg, heat = _new_map(run_dir / "heat.zarr", src.shape)
         sp, tr = zarr.open_group(str(run_dir / "speck.zarr"))["0"], zarr.open_group(str(run_dir / "trace.zarr"))["0"]
@@ -455,7 +538,7 @@ def run_scan(spec: ScanSpec, runs_root: str | Path = ROOT / "runs", progress: Pr
 
         # 7. risk ---------------------------------------------------------------------
         stage("risk")
-        st_recs, info = extract_findings(run_dir, spec, src)
+        st_recs, info = extract_findings(run_dir, spec, src, progress=sub("risk"))
         (run_dir / "dropped.json").write_text(json.dumps(info.pop("dropped", [])))
         findings = st_recs + comp_recs
         assess(findings, cls, px)

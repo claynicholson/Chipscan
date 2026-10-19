@@ -18,6 +18,7 @@ import os
 from concurrent.futures import ProcessPoolExecutor
 from pathlib import Path
 
+import cv2
 import numpy as np
 from scipy import ndimage as ndi
 
@@ -40,6 +41,8 @@ def _tile_residual(args) -> tuple[int, int, np.ndarray, int]:
     out = np.zeros((size, size), np.uint8)
     if img.std() < 0.004:
         return x0, y0, out, -1
+    if src.num_levels <= 3:  # too small to search for twins at the coarse level
+        return x0, y0, _fallback(img, x0 - rx0, y0 - ry0, size), 0
     twins = [t for t in find_twins_slack(src, rx0, ry0, rs, min_dist_px=max(rs, 256)) if t[2] >= 0.8]
     if len(twins) < 3:
         return x0, y0, _fallback(img, x0 - rx0, y0 - ry0, size), 0
@@ -110,7 +113,7 @@ def _fallback(img: np.ndarray, ox: int, oy: int, size: int) -> np.ndarray:
     sm = ndi.gaussian_filter(img, 2.0)
     grad = np.hypot(ndi.sobel(sm, 0), ndi.sobel(sm, 1))
     edges = ndi.binary_dilation(grad > 0.05, iterations=5)
-    bg = ndi.median_filter(img, size=15)
+    bg = cv2.medianBlur(np.clip(np.rint(img * 255), 0, 255).astype(np.uint8), 15).astype(np.float32) / 255.0
     r = np.zeros_like(img)  # only isolated blobs speak (fine meanders are texture, not edges)
     # keep blobs that sit on a flat field even if they produced their own small edge
     speck = ndi.binary_opening(np.abs(img - bg) > 0.04, structure=np.ones((2, 2)))
