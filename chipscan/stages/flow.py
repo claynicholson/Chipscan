@@ -59,7 +59,7 @@ class ScanSpec:
     component_missing: bool = False  # missing-member reports need regular lines; off until validated per design
     min_area_px: int = 4
     layout_model: str = str(ROOT / "models" / "layout_v1.pt")
-    speck_model: str = str(ROOT / "models" / "speck_v2.pt")
+    speck_model: str = str(ROOT / "models" / "speck_v3.pt")
     trace_model: str = str(ROOT / "models" / "trace_v2.pt")
     reference_threshold: float = 0.06
     """Reference residual (grey levels outside every twin's tolerance envelope) that counts as dirt; <=0 disables."""
