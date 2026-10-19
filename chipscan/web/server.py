@@ -552,7 +552,7 @@ def create_app(config_paths: list[Path], db_path: Path | None = None, runs_root:
                         "straighten": ((r.meta or {}).get("stages") or {}).get("straighten"),
                         "layout": ((r.meta or {}).get("stages") or {}).get("layout"),
                         "components": ((r.meta or {}).get("stages") or {}).get("components"),
-                        "spec": {k: (r.meta or {}).get("spec", {}).get(k) for k in ("speck_threshold", "trace_threshold", "min_area_px", "gds")},
+                        "spec": {k: (r.meta or {}).get("spec", {}).get(k) for k in ("speck_threshold", "trace_threshold", "min_area_px", "gds", "report_traces")},
                     }
                     if r.scan_run
                     else None,

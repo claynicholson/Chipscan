@@ -35,8 +35,17 @@ def main() -> None:
     ap.add_argument("--pos-weight", type=float, default=3.0)
     ap.add_argument("--hard-negatives", default=None, help="JSON from mine_negatives.py: sample tiles around these (unlabelled)")
     ap.add_argument("--p-hard", type=float, default=0.4)
+    ap.add_argument("--refs", action="store_true", help="label real specks from reference maps (data/refmaps, runs/<scan>/reference.zarr) and sample around them")
+    ap.add_argument("--base", type=int, default=24)
+    ap.add_argument("--batch-size", type=int, default=16)
     a = ap.parse_args()
-    scenes = [PyramidSource(ROOT / "data/pyramids" / f"{n}.zarr") for n in TRAIN]
+    def scene(n):  # a scan whose reference map was made on its straightened copy is read from there
+        c = ROOT / "runs" / n / "corrected.zarr"
+        if a.refs and (ROOT / "runs" / n / "reference.zarr").exists() and not (ROOT / "data/refmaps" / f"{n}.reference.zarr").exists():
+            return PyramidSource(c)
+        return PyramidSource(ROOT / "data/pyramids" / f"{n}.zarr")
+
+    scenes = [scene(n) for n in TRAIN]
     val = [PyramidSource(ROOT / "data/pyramids" / f"{n}.zarr") for n in VAL]
     for which in a.which:
         t0 = time.time()
@@ -53,9 +62,25 @@ def main() -> None:
                 ds.hard = [np.asarray(hn.get(n, []), dtype=np.int64).reshape(-1, 2) for n in TRAIN]
                 ds.p_hard = a.p_hard
                 print("hard negatives:", {n: len(hn.get(n, [])) for n in TRAIN}, flush=True)
+            if a.refs and which == "speck":
+                import json
+
+                import numpy as np
+                import zarr
+
+                refs, centres = [], []
+                for n in TRAIN:
+                    pth = next((p for p in (ROOT / "data/refmaps" / f"{n}.reference.zarr", ROOT / "runs" / n / "reference.zarr") if p.exists()), None)
+                    refs.append(zarr.open_group(str(pth), mode="r")["0"] if pth else None)
+                hv = ROOT / "models" / "speck_harvest.json"
+                hj = json.loads(hv.read_text()) if hv.exists() else {}
+                ds.refs = refs
+                ds.hard = [np.asarray(hj.get(n, []), dtype=np.int64).reshape(-1, 2) for n in TRAIN]
+                ds.p_hard = a.p_hard
+                print("reference labels:", {n: (r is not None, len(hj.get(n, []))) for n, r in zip(TRAIN, refs)}, flush=True)
             vs = DefectTiles(val, which, n_samples=a.val_samples, seed=98, augment=False)
         init = a.init_path or (ROOT / "models" / f"{which}_{a.init}.pt" if a.init else None)
-        train(which, ds, ROOT / "models" / f"{which}_{a.version}.pt", vs, epochs=a.epochs, lr=a.lr, init_from=init, pos_weight=a.pos_weight, log=lambda s: print(s, flush=True))
+        train(which, ds, ROOT / "models" / f"{which}_{a.version}.pt", vs, epochs=a.epochs, lr=a.lr, base=a.base, batch_size=a.batch_size, init_from=init, pos_weight=a.pos_weight, log=lambda s: print(s, flush=True))
         print(f"{which} done in {(time.time() - t0) / 60:.1f} min", flush=True)
     sys.exit(0)
 

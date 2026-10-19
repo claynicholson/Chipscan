@@ -360,3 +360,94 @@ sl-range::part(form-control-help-text) { font-size: 11.5px; color: var(--text-3)
 .welcome-card > sl-icon { font-size: 40px; color: var(--accent); }
 .welcome-card h2 { margin: 0; font-size: 20px; }
 .welcome-card p { margin: 0 0 8px; color: var(--text-2); line-height: 1.55; }
+
+/* ================================================================ Apple light theme
+   Clean, airy, system font. Overrides the earlier dark tokens; layout is unchanged. */
+:root {
+  --sl-font-sans: -apple-system, BlinkMacSystemFont, "SF Pro Text", "SF Pro Display", "Inter", "Helvetica Neue", Arial, sans-serif;
+  --sl-font-mono: "SF Mono", ui-monospace, "JetBrains Mono", Menlo, monospace;
+  --sl-color-primary-50: #eef6ff; --sl-color-primary-100: #d9ebff; --sl-color-primary-200: #b3d7ff;
+  --sl-color-primary-300: #7cbcff; --sl-color-primary-400: #3d97f5; --sl-color-primary-500: #0a7cf0;
+  --sl-color-primary-600: #0071e3; --sl-color-primary-700: #005fc1; --sl-color-primary-800: #004d9c;
+  --sl-color-primary-900: #003e7d; --sl-color-primary-950: #00264d;
+  --sl-border-radius-medium: 10px;
+  --sl-border-radius-large: 14px;
+  --sl-input-border-radius-small: 8px;
+  --sl-input-border-radius-medium: 10px;
+  --sl-focus-ring-color: rgba(0, 113, 227, .35);
+
+  --bg: #f5f5f7;
+  --surface: rgba(255, 255, 255, .78);
+  --surface-2: #ffffff;
+  --surface-3: #f2f2f5;
+  --border: rgba(0, 0, 0, .08);
+  --border-strong: rgba(0, 0, 0, .14);
+  --text: #1d1d1f;
+  --text-2: #424245;
+  --text-3: #86868b;
+  --accent: #0071e3;
+  --accent-soft: rgba(0, 113, 227, .09);
+  --real: #248a3d; --false: #d70015; --unsure: #b25000;
+  --shadow: 0 1px 2px rgba(0, 0, 0, .04), 0 4px 16px rgba(0, 0, 0, .05);
+  --appbar-h: 56px;
+}
+body { background: var(--bg); color: var(--text); letter-spacing: -.005em; }
+
+/* header: frosted glass, logo + product name */
+.appbar {
+  background: rgba(255, 255, 255, .72);
+  backdrop-filter: saturate(180%) blur(20px); -webkit-backdrop-filter: saturate(180%) blur(20px);
+  border-bottom: 1px solid var(--border);
+}
+.brand { gap: 10px; }
+.brand-logo { height: 26px; width: auto; display: block; border-radius: 2px; }
+.brand-name { font: 600 17px/1 var(--sl-font-sans); letter-spacing: -.02em; color: var(--text); }
+.runinfo .meta { background: var(--surface-3); border-color: transparent; color: var(--text-2); }
+
+/* panes and cards: white, soft shadow, generous radius */
+.pane { background: var(--surface); backdrop-filter: blur(20px); -webkit-backdrop-filter: blur(20px); }
+.pane-left { border-right: 1px solid var(--border); }
+.pane-right { border-left: 1px solid var(--border); }
+.pane-section { border-bottom: 1px solid var(--border); }
+.card { background: var(--surface-2); border: 1px solid var(--border); border-radius: 14px; box-shadow: var(--shadow); }
+.card-head > span, .stat-label, .list-head, .review-label { color: var(--text-3); letter-spacing: .02em; text-transform: none; font-size: 12px; font-weight: 600; }
+.stat { background: var(--surface-2); border: 1px solid var(--border); border-radius: 12px; box-shadow: var(--shadow); }
+.stat-value { font-weight: 600; letter-spacing: -.02em; }
+.review-progress { --indicator-color: var(--accent); --track-color: rgba(0, 0, 0, .06); }
+
+/* list rows */
+.row { border-bottom: 1px solid var(--border); border-left: 3px solid transparent; }
+.row:hover { background: rgba(0, 0, 0, .025); }
+.row.active { background: var(--accent-soft); border-left-color: var(--accent); }
+.row img { background: #e8e8ed; border: none; border-radius: 8px; }
+.row-sub b { color: var(--text-2); }
+
+/* chips, group cards, pills */
+.chip { background: var(--surface-2); border-color: var(--border); color: var(--text-2); }
+.chip.on { background: var(--accent-soft); border-color: rgba(0, 113, 227, .35); color: var(--text); }
+.group-card { background: var(--surface-2); border-color: var(--border); border-radius: 12px; box-shadow: var(--shadow); color: var(--text-3); }
+.group-card.on { color: var(--text); background: #fff; border-color: color-mix(in srgb, var(--g) 45%, transparent); box-shadow: 0 0 0 3px color-mix(in srgb, var(--g) 12%, transparent), var(--shadow); }
+.g-speck { --g: #0071e3; } .g-trace { --g: #bf5af2; } .g-component { --g: #ff375f; }
+.lv-critical { --lv: #d70015; } .lv-high { --lv: #c93400; } .lv-medium { --lv: #a05a00; } .lv-low { --lv: #86868b; }
+.risk-pill { border-radius: 999px; font-family: var(--sl-font-sans); font-weight: 600; }
+
+/* image stage: the scan sits on a neutral canvas */
+.stage { background: #e8e8ed; }
+.viewer { background: #e8e8ed; }
+.statusbar { background: rgba(255, 255, 255, .8); backdrop-filter: blur(20px); -webkit-backdrop-filter: blur(20px); border-top: 1px solid var(--border); color: var(--text-2); }
+.zoom-val { color: var(--text); }
+.navigator-host { background: #e8e8ed; border: none; border-radius: 10px; }
+.defect-hero img { background: #e8e8ed; border: none; border-radius: 12px; }
+.risk-block { background: var(--surface-3); border: none; border-radius: 12px; }
+.rf-track { background: rgba(0, 0, 0, .07); }
+.rf-fill { background: linear-gradient(90deg, #34c759, #ffcc00 55%, #ff3b30); }
+kbd { background: #fff; border-color: rgba(0, 0, 0, .15); color: var(--text-2); }
+code { background: var(--surface-3); color: var(--text); }
+.mode { background: var(--accent-soft); color: var(--accent); }
+.drop { background: #fbfbfd; border-color: rgba(0, 0, 0, .15); border-radius: 14px; }
+.drop:hover, .drop.over { background: var(--accent-soft); border-color: var(--accent); }
+.jobs-drawer::part(panel), .add-dialog::part(panel), .help-dialog::part(panel) { background: #fff; border: none; border-radius: 16px; box-shadow: 0 20px 60px rgba(0, 0, 0, .18); }
+.job { background: var(--surface-3); border: none; border-radius: 12px; }
+.welcome { background: var(--bg); }
+.sw-trace { background: rgba(0, 113, 227, .7); } .sw-comp { background: rgba(255, 55, 95, .8); } .sw-text { background: rgba(52, 199, 89, .75); }
+.list, .pane-right { scrollbar-color: rgba(0, 0, 0, .2) transparent; }

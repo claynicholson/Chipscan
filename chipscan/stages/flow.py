@@ -61,6 +61,8 @@ class ScanSpec:
     layout_model: str = str(ROOT / "models" / "layout_v1.pt")
     speck_model: str = str(ROOT / "models" / "speck_v2.pt")
     trace_model: str = str(ROOT / "models" / "trace_v2.pt")
+    reference_threshold: float = 0.06
+    """Reference residual (grey levels outside every twin's tolerance envelope) that counts as dirt; <=0 disables."""
     anomaly_model: str = str(ROOT / "models" / "anomaly_v6.pt")
     """Second opinion for dirt: the general anomaly model finds things the speck net misses (hairs,
     odd particles). Its candidates go through the same text and twin filters."""
@@ -151,7 +153,10 @@ def speck_union_map(run_dir: Path, spec: ScanSpec) -> zarr.Array:
     run_dir = Path(run_dir)
     sp = zarr.open_group(str(run_dir / "speck.zarr"), mode="r")["0"]
     extra = []
-    for name, thr in (("anomaly", 0.5), ("paddirt", 0.5)):
+    srcs = [("anomaly", 0.5), ("paddirt", 0.5)]
+    if spec.reference_threshold > 0:
+        srcs.append(("reference", spec.reference_threshold * 1000.0 / 255.0))
+    for name, thr in srcs:
         pth = run_dir / f"{name}.zarr"
         if pth.exists():
             extra.append((zarr.open_group(str(pth), mode="r")["0"], thr))
@@ -181,6 +186,7 @@ def extract_findings(run_dir: Path, spec: ScanSpec, source: ImageSource | None =
     cls = zarr.open_group(str(run_dir / "layout.zarr"), mode="r")["0"]
     info: dict = {}
     out: list[dict] = []
+    dropped: list[tuple[dict, str]] = []
     groups = [("speck", spec.speck_threshold, 6)] + ([("trace", spec.trace_threshold, 8)] if spec.report_traces else [])
     for group, thr, merge in groups:
         if group == "speck":
@@ -193,13 +199,26 @@ def extract_findings(run_dir: Path, spec: ScanSpec, source: ImageSource | None =
             # where did each candidate come from? anomaly-model-only finds are the least specific
             sp_net = zarr.open_group(str(run_dir / "speck.zarr"), mode="r")["0"]
             pad = zarr.open_group(str(run_dir / "paddirt.zarr"), mode="r")["0"] if (run_dir / "paddirt.zarr").exists() else None
+            ref = zarr.open_group(str(run_dir / "reference.zarr"), mode="r")["0"] if spec.reference_threshold > 0 and (run_dir / "reference.zarr").exists() else None
             for d in recs:
                 b = d["bbox_px"]
                 ys, xs = slice(int(b["y0"]), int(b["y1"])), slice(int(b["x0"]), int(b["x1"]))
                 net = float(np.asarray(sp_net[ys, xs]).max()) / 255.0
                 rule = float(np.asarray(pad[ys, xs]).max()) / 255.0 if pad is not None else 0.0
-                d["source"] = "speck_net" if net >= spec.speck_threshold else ("pad_rule" if rule >= 0.5 else "anomaly_model")
+                rr = float(np.asarray(ref[ys, xs]).max()) / 1000.0 if ref is not None else 0.0
+                d["source"] = "speck_net" if net >= spec.speck_threshold else ("pad_rule" if rule >= 0.5 else ("reference" if rr >= spec.reference_threshold else "anomaly_model"))
+            # the scan's own border (black fill past the last camera frame / from straightening) is not dirt
+            edge = [d for d in recs if _on_border(source, d)]
+            recs = [d for d in recs if not any(d is e for e in edge)]
+            dropped += [(d, "scan_border") for d in edge]
+            # the reference residual alone speaks only for specks isolated on flat field; next to a
+            # junction pad or a trace corner it is more often a design variant than dust
+            lone = [d for d in recs if d["source"] != "reference" or _isolated(source, d)]
+            dropped += [(d, "reference_not_isolated") for d in recs if d["source"] == "reference" and not any(d is e for e in lone)]
+            recs = lone
+            big = [d for d in recs if d["source"] == "anomaly_model" and d["area_px"] > 3000]
             recs = [d for d in recs if not (d["source"] == "anomaly_model" and d["area_px"] > 3000)]
+            dropped += [(d, "anomaly_too_big") for d in big]
         # small specks sit right on letter strokes the layout net only partly calls text: wider margin
         if group == "speck":
             # compact blobs survive inside "text" for the speck net and the pad rule (the layout net
@@ -207,9 +226,12 @@ def extract_findings(run_dir: Path, spec: ScanSpec, source: ImageSource | None =
             a, on_a = suppress_text([d for d in recs if d.get("source") != "anomaly_model"], cls, grow_px=10, keep_compact=True)
             b, on_b = suppress_text([d for d in recs if d.get("source") == "anomaly_model"], cls, grow_px=10, keep_compact=False)
             recs, on_text = a + b, on_a + on_b
+            dropped += [(d, "on_text") for d in on_text]
             recs, is_comp = suppress_component_shapes(recs, cls)
+            dropped += [(d, "component_shape") for d in is_comp]
             info["speck_is_component"] = len(is_comp)
             recs, glyphs = suppress_text_lines(recs, source)
+            dropped += [(d, "lettering") for d in glyphs]
             info["speck_text_lines"] = len(glyphs)
         else:
             recs, on_text = suppress_text(recs, cls, grow_px=4)
@@ -219,6 +241,7 @@ def extract_findings(run_dir: Path, spec: ScanSpec, source: ImageSource | None =
             from chipscan.stages.verify import verify
 
             recs, explained = verify(source, recs)
+            dropped += [(d, "stitch_ghost" if d.get("stitch_ghost") else "explained_by_twins") for d in explained]
             info[f"{group}_explained_by_twins"] = sum(1 for d in explained if not d.get("stitch_ghost"))
             info[f"{group}_stitch_ghosts"] = sum(1 for d in explained if d.get("stitch_ghost"))
         if group == "speck" and recs:
@@ -227,6 +250,8 @@ def extract_findings(run_dir: Path, spec: ScanSpec, source: ImageSource | None =
             d["group"] = group
             d["kind"] = group
             d["class"] = group
+            if group == "speck" and (d.get("source") == "pad_rule" or d.get("grown_on_pad")):
+                d["class"] = "probe_mark"  # dark mark inside a bond/probe pad: usually the probe needle's scrub
         info[f"{group}_raw"] = n0
         info[f"{group}_on_text"] = len(on_text)
         out += recs
@@ -249,7 +274,38 @@ def extract_findings(run_dir: Path, spec: ScanSpec, source: ImageSource | None =
                     drop.add(id(t) if s["score"] >= t["score"] else id(s))
     out = [d for d in out if id(d) not in drop]
     info["dedup_dropped"] = len(drop)
+    info["dropped"] = [{"centroid_px": d["centroid_px"], "bbox_px": d["bbox_px"], "reason": r, "source": d.get("source")} for d, r in dropped]
     return out, info
+
+
+def _on_border(source: ImageSource, d: dict, reach: int = 12) -> bool:
+    b = d["bbox_px"]
+    Hs, Ws = source.shape
+    if b["x0"] <= 2 or b["y0"] <= 2 or b["x1"] >= Ws - 2 or b["y1"] >= Hs - 2:
+        return True
+    win = source.read_region(int(b["x0"]) - reach, int(b["y0"]) - reach, int(b["x1"]) + reach, int(b["y1"]) + reach)
+    return int((win <= 1).sum()) >= 20
+
+
+def _isolated(source: ImageSource, d: dict, ring_in: int = 3, ring_out: int = 8) -> bool:
+    """No designed edge within a few px of the finding (its 3-8 px ring is featureless)."""
+    import cv2
+    from scipy import ndimage as ndi
+
+    b = d["bbox_px"]
+    x0, y0, x1, y1 = int(b["x0"]) - 12, int(b["y0"]) - 12, int(b["x1"]) + 12, int(b["y1"]) + 12
+    win = source.read_region(x0, y0, x1, y1).astype(np.float32) / 255.0
+    own = np.zeros(win.shape, np.uint8)
+    polys = [np.rint(np.asarray(q) - [x0, y0]).astype(np.int32) for q in d.get("polygons_px") or [] if len(q) >= 3]
+    if polys:
+        cv2.fillPoly(own, polys, 1)
+    else:
+        own[12:-12, 12:-12] = 1
+    own = own.astype(bool)
+    ring = ndi.binary_dilation(own, iterations=ring_out) & ~ndi.binary_dilation(own, iterations=ring_in)
+    sm = ndi.gaussian_filter(win, 1.0)
+    busy = np.hypot(ndi.sobel(sm, 0), ndi.sobel(sm, 1)) > 0.12
+    return bool(ring.any()) and float(busy[ring].mean()) < 0.1
 
 
 def _grow_on_pads(source: ImageSource, d: dict, px: float, pad: int = 160) -> dict:
@@ -400,6 +456,7 @@ def run_scan(spec: ScanSpec, runs_root: str | Path = ROOT / "runs", progress: Pr
         # 7. risk ---------------------------------------------------------------------
         stage("risk")
         st_recs, info = extract_findings(run_dir, spec, src)
+        (run_dir / "dropped.json").write_text(json.dumps(info.pop("dropped", [])))
         findings = st_recs + comp_recs
         assess(findings, cls, px)
         findings.sort(key=lambda d: -d["risk"])
@@ -475,6 +532,7 @@ def reprocess(run_dir: Path) -> dict:
     comp_recs, on_text = suppress_text(comp_recs, cls)
     csum["on_text_dropped"] = len(on_text)
     st_recs, info = extract_findings(run_dir, spec, src)
+    (run_dir / "dropped.json").write_text(json.dumps(info.pop("dropped", [])))
     findings = st_recs + comp_recs
     assess(findings, cls, px)
     findings.sort(key=lambda d: -d["risk"])

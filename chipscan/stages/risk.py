@@ -86,6 +86,8 @@ def assess(findings: list[dict], class_map, pixel_size_um: float | None, window_
             r = 0.7 * (0.45 + 0.35 * jj + 0.2 * sz) * (0.6 + 0.4 * conf)
         else:  # speck
             r = sz * (0.12 + 0.88 * max(jj, 0.65 * tr)) * (0.7 + 0.3 * conf)
+            if d.get("class") == "probe_mark":
+                r *= 0.6  # pads are made to be probed: a scrub there matters only if it is large
         if d.get("verified") is False:
             r *= 0.85  # no twin to compare with (unique structure): less certain it is a defect
         score = float(np.clip(100.0 * r, 0, 100))
@@ -174,16 +176,31 @@ def suppress_text_lines(findings: list[dict], source, window: int = 160) -> tupl
         # a line of characters: crossing the word's middle rows hits ink many times (strokes)
         mid = (ink[sl] & mine)[max(0, h0 // 2 - 2) : h0 // 2 + 3]
         crossings = int(np.median([np.count_nonzero(np.diff(r.astype(np.int8)) == 1) for r in mid])) if mid.size else 0
-        if w0 >= 1.8 * h0 and (holes >= 3 or (12 <= h0 <= 80 and crossings >= 5)):
+        # a particle lying on a trace merges with the line into one wide holey blob: a word never
+        # has one row of unbroken ink spanning (nearly) its whole width
+        run = 0
+        for r_ in (ink[sl] & mine):
+            if r_.any():
+                e = np.flatnonzero(np.diff(np.r_[0, r_.astype(np.int8), 0]))
+                run = max(run, int((e[1::2] - e[::2]).max()))
+        on_line = run >= 0.7 * w0
+        if w0 >= 1.8 * h0 and not on_line and (holes >= 3 or (12 <= h0 <= 80 and crossings >= 5)):
             dropped.append(d)
             continue
         if w0 > 3 * h0:
             kept.append(d)
             continue
         base0 = sl[0].stop
+        # lettering is printed in one tone: fellow glyphs share polarity and contrast with this one
+        # (a dark particle beside a row of bright junction pads is not a word)
+        sig = win - local
+        c0 = float(np.median(sig[sl][mine]))
         mates = 0
-        for o in objs:
+        for j, o in enumerate(objs, start=1):
             if o is None or o is sl:
+                continue
+            cj = float(np.median(sig[o][lab[o] == j]))
+            if np.sign(cj) != np.sign(c0) or not (0.5 <= abs(cj) / max(abs(c0), 1e-6) <= 2.0):
                 continue
             h = o[0].stop - o[0].start
             w = o[1].stop - o[1].start

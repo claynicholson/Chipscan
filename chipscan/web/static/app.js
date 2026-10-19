@@ -2,14 +2,14 @@
    three finding groups with risk levels, inspector, keyboard review. */
 (() => {
   const COLORS = { anomaly: "#ff7a1a", speck: "#8fd3ff", die2die: "#ff4fb8", short: "#ff5c5c", open: "#e15cff", particle: "#ffab4a", protrusion: "#ffe066", notch: "#5ce1ff", void: "#5cb8ff", missing_feature: "#b77cff", extra_feature: "#b77cff", unclassified: "#4fcb7b" };
-  const GROUP_COLORS = { speck: "#38c6f4", trace: "#ffb020", component: "#ff4fd8" };
+  const GROUP_COLORS = { speck: "#0a84ff", trace: "#bf5af2", component: "#ff375f" };
   const LEVEL_COLORS = { critical: "#ff4d5e", high: "#ff9f40", medium: "#f2d24e", low: "#7d8796" };
   const LEVEL_WIDTH = { critical: 2.4, high: 1.9, medium: 1.4, low: 1.1 };
   const SEV = { anomaly: 3, speck: 2, die2die: 4, short: 5, open: 5, missing_feature: 4, extra_feature: 4, particle: 3, protrusion: 2, notch: 2, void: 1, unclassified: 0 };
   const CLASS_KEYS = { "1": "short", "2": "open", "3": "particle", "4": "protrusion", "5": "notch", "6": "void" };
   const LABEL = {
     die2die: "die-to-die", false_alarm: "false alarm", missing_feature: "missing feature", extra_feature: "extra feature",
-    trace: "trace error", component_defect: "component defect", component_deformed: "deformed component", component_missing: "missing component",
+    trace: "trace error", component_defect: "component defect", component_deformed: "deformed component", component_missing: "missing component", probe_mark: "probe mark",
   };
   const GROUP_LABEL = { speck: "Speck", trace: "Trace error", component: "Component error" };
   const ROW_H = 64;
@@ -107,7 +107,7 @@
     $("layer-pred-label").textContent = scan ? "Detector heatmap" : "Prediction heatmap";
     if (scan) {
       const sp = (run.scan && run.scan.spec) || {};
-      $("thr-speck").value = +(sp.speck_threshold ?? 0.5); $("thr-trace").value = +(sp.trace_threshold ?? 0.5); $("minpx-scan").value = String(sp.min_area_px ?? 4);
+      $("thr-speck").value = +(sp.speck_threshold ?? 0.5); $("thr-trace").value = +(sp.trace_threshold ?? 0.5); $("thr-trace").hidden = sp.report_traces !== true; $("minpx-scan").value = String(sp.min_area_px ?? 4);
       $("sort").value = "risk";
       $("layer-design").checked = false;
     } else if ($("sort").value === "risk") {
@@ -145,7 +145,7 @@
       id: "viewer", tileSources: tileSource("tiles", "jpg"),
       showNavigationControl: false,
       showNavigator: true, navigatorId: "navigator", navigatorAutoFade: false, navigatorAutoResize: true,
-      navigatorBackground: "#000", navigatorBorderColor: "transparent", navigatorDisplayRegionColor: "#4fcb7b", navigatorOpacity: 1,
+      navigatorBackground: "#e8e8ed", navigatorBorderColor: "transparent", navigatorDisplayRegionColor: "#0071e3", navigatorOpacity: 1,
       maxZoomPixelRatio: 8, minZoomImageRatio: 0.5, animationTime: 0.5, gestureSettingsMouse: { clickToZoom: false },
       crossOriginPolicy: false, imageSmoothingEnabled: false, visibilityRatio: 0.2,
     });
@@ -377,7 +377,9 @@
         const c = defects.filter(d => d.group === g && (d.risk_level === "critical" || d.risk_level === "high")).length;
         $(`gn-${g}`).textContent = n.toLocaleString();
         $(`gc-${g}`).textContent = c ? `${c.toLocaleString()} high+` : "";
-        document.querySelector(`.group-card[data-group="${g}"]`).classList.toggle("on", groupOn[g]);
+        const card = document.querySelector(`.group-card[data-group="${g}"]`);
+        card.classList.toggle("on", groupOn[g]);
+        card.classList.toggle("hidden", g === "trace" && n === 0);  // trace errors are off by default
       }
       for (const lv of ["critical", "high", "medium", "low"]) {
         $(`lv-${lv}`).textContent = defects.filter(d => groupOn[d.group] && d.risk_level === lv).length.toLocaleString();

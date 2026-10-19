@@ -65,6 +65,7 @@ class ScanTiles(Dataset):
                 x = int(np.clip(cx - size // 2 + self.rng.integers(-j, j + 1), 0, max(0, W - size)))
                 y = int(np.clip(cy - size // 2 + self.rng.integers(-j, j + 1), 0, max(0, H - size)))
                 t = sc.read_region(x, y, x + size, y + size).astype(np.float32) / 255.0
+                self.last = (k, x, y, size)
                 if size != self.tile_px:
                     t = cv2.resize(t, (self.tile_px, self.tile_px), interpolation=cv2.INTER_AREA if f > 1 else cv2.INTER_LINEAR)
                 return t
@@ -73,6 +74,7 @@ class ScanTiles(Dataset):
             t = sc.read_region(x, y, x + size, y + size).astype(np.float32) / 255.0
             if t.std() > self.min_std or self.rng.uniform() < 0.05:
                 break
+        self.last = (k, x, y, size)
         if size != self.tile_px:
             t = cv2.resize(t, (self.tile_px, self.tile_px), interpolation=cv2.INTER_AREA if f > 1 else cv2.INTER_LINEAR)
         return t
@@ -168,6 +170,32 @@ def real_dirt(img: np.ndarray, t: Tones | None = None) -> tuple[np.ndarray, np.n
     return dirt, unsure
 
 
+def ref_dirt(img: np.ndarray, ref: np.ndarray, thr: int = 60) -> tuple[np.ndarray, np.ndarray]:
+    """Real specks from the reference residual (chipscan.stages.reference, uint8 = residual x 1000).
+
+    Positives: residual blobs that sit isolated on flat field (their 3-8 px ring has no designed
+    edges) - lone dust the twins prove is not designed. Everything else the residual flags
+    (fragments next to labels or junction variants) is left out of the loss, not taught either way."""
+    hit = ndi.binary_opening(ref > thr, structure=np.ones((2, 2))) | (ref > 2 * thr)
+    near = ndi.binary_dilation(ref > thr // 2, iterations=2)
+    pos = np.zeros(img.shape, bool)
+    lab, n = ndi.label(hit)
+    if n:
+        sm = ndi.gaussian_filter(img, 1.0)
+        busy = np.hypot(ndi.sobel(sm, 0), ndi.sobel(sm, 1)) > 0.12
+        for i, sl in enumerate(ndi.find_objects(lab), start=1):
+            if sl is None:
+                continue
+            y0, x0 = max(0, sl[0].start - 10), max(0, sl[1].start - 10)
+            own = lab[y0 : sl[0].stop + 10, x0 : sl[1].stop + 10] == i
+            if own.sum() < 3 or own.sum() > 2000:
+                continue
+            ring = ndi.binary_dilation(own, iterations=8) & ~ndi.binary_dilation(own, iterations=3)
+            if ring.any() and busy[y0 : sl[0].stop + 10, x0 : sl[1].stop + 10][ring].mean() < 0.1:
+                pos[y0 : sl[0].stop + 10, x0 : sl[1].stop + 10] |= ndi.binary_dilation(own, iterations=1)
+    return pos, near & ~pos
+
+
 class DefectTiles(ScanTiles):
     """Painted tiles; `target` is the category that is labelled ("speck" or "trace").
 
@@ -182,6 +210,16 @@ class DefectTiles(ScanTiles):
         img = self.read_tile()
         rng = self.rng
         dirt, unsure = real_dirt(img) if self.target == "speck" else (None, None)
+        refs = getattr(self, "refs", None)
+        if dirt is not None and refs and refs[self.last[0]] is not None:
+            k, x, y, size = self.last
+            ref = np.asarray(refs[k][y : y + size, x : x + size])
+            if ref.shape != (size, size):
+                ref = np.pad(ref, ((0, size - ref.shape[0]), (0, size - ref.shape[1])))
+            if size != self.tile_px:
+                ref = cv2.resize(ref, (self.tile_px, self.tile_px), interpolation=cv2.INTER_NEAREST)
+            rp, ru = ref_dirt(img, ref)
+            dirt, unsure = dirt | rp, (unsure | ru) & ~(dirt | rp)
         clean = rng.uniform() < self.p_clean
         own = 0 if clean else int(rng.integers(1, 4))
         other = int(rng.poisson(1.0))
