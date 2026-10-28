@@ -132,20 +132,65 @@ def _iou(a: dict, b: dict) -> float:
 
 
 # ----------------------------------------------------------------------------- dirt candidates
-def pad_dirt_map(source: ImageSource, store, tile: int = 1024, margin: int = 160, progress=None) -> None:
-    """Rule-based dirt on pads (anything dark inside a pad's interior), written as 0/255."""
+def _pad_tile(args):
     from chipscan.stages.nets import real_dirt
+
+    t = args
+    src = _PAD["source"]
+    x0, y0, x1, y1 = t.read.to_int()
+    dirt, _ = real_dirt(src.read_region(x0, y0, x1, y1).astype(np.float32) / 255.0)
+    return t, (dirt[t.core_slice_in_read] * 255).astype(np.uint8)
+
+
+_PAD: dict = {}
+
+
+def _pad_init(source) -> None:
+    import torch  # noqa: F401  (before pyvips users on macOS)
+
+    _PAD["source"] = source
+
+
+def pad_dirt_map(source: ImageSource, store, tile: int = 1024, margin: int = 160, progress=None, mask=None, workers: int | None = None) -> None:
+    """Rule-based dirt on pads (anything dark inside a pad's interior), written as 0/255.
+    Tiles in parallel on all cores; tiles off the chip (`mask`) are skipped."""
+    import os
+    from concurrent.futures import ProcessPoolExecutor
+
     from chipscan.tiling import make_tiles
 
     tiles = make_tiles(source.shape, tile, margin)
-    for i, t in enumerate(tiles):
-        x0, y0, x1, y1 = t.read.to_int()
-        img = source.read_region(x0, y0, x1, y1).astype(np.float32) / 255.0
-        dirt, _ = real_dirt(img)
+    if mask is not None:
+        tiles = [t for t in tiles if mask.any_in(*t.core.to_int())]
+    workers = workers if workers is not None else max(1, (os.cpu_count() or 4) - 2)
+
+    def put(i, t, arr):
         cx0, cy0, cx1, cy1 = t.core.to_int()
-        store[cy0:cy1, cx0:cx1] = (dirt[t.core_slice_in_read] * 255).astype(np.uint8)
+        store[cy0:cy1, cx0:cx1] = arr
         if progress:
             progress(i + 1, len(tiles))
+
+    if workers <= 1 or len(tiles) < 8:
+        _pad_init(source)
+        for i, t in enumerate(tiles):
+            put(i, *_pad_tile(t))
+        return
+    with ProcessPoolExecutor(max_workers=workers, initializer=_pad_init, initargs=(source,)) as ex:
+        for i, (t, arr) in enumerate(ex.map(_pad_tile, tiles, chunksize=4)):
+            put(i, t, arr)
+
+
+def scan_mask(run_dir: Path, source: ImageSource, px: float | None = None):
+    """The chip area of this scan (computed once, kept in the run)."""
+    from chipscan.stages.chipmask import ChipMask, chip_mask
+
+    f = Path(run_dir) / "chipmask.npz"
+    if f.exists():
+        z = np.load(f)
+        return ChipMask(z["mask"], int(z["scale"]))
+    m = chip_mask(source, pixel_size_um=px)
+    np.savez_compressed(f, mask=m.mask, scale=m.scale)
+    return m
 
 
 def speck_union_map(run_dir: Path, spec: ScanSpec) -> zarr.Array:
@@ -415,7 +460,7 @@ def run_scan(spec: ScanSpec, runs_root: str | Path = ROOT / "runs", progress: Pr
     kept and the flow continues from the first unfinished one."""
     from chipscan.io.pyramid import build_pyramid
     from chipscan.stages.components import component_errors, find_instances
-    from chipscan.stages.nets import TiledNet
+    from chipscan.stages.nets import TiledNet, run_nets
     from chipscan.stages.risk import assess, suppress_text
     from chipscan.stages.straighten import straighten
 
@@ -487,6 +532,10 @@ def run_scan(spec: ScanSpec, runs_root: str | Path = ROOT / "runs", progress: Pr
             done("straighten", angle_deg=0.0, seams=False)
         src.pixel_size_um = px
 
+        # only the chip is scanned: stage background, black fill and the bare wafer rim are skipped
+        cmask = scan_mask(run_dir, src, px)
+        meta["chip_fraction"] = round(cmask.fraction, 3)
+
         # 3. layout -----------------------------------------------------------------
         if finished("layout", "layout.zarr"):
             cls = zarr.open_group(str(run_dir / "layout.zarr"), mode="r")["0"]
@@ -494,7 +543,7 @@ def run_scan(spec: ScanSpec, runs_root: str | Path = ROOT / "runs", progress: Pr
             stage("layout")
             lg, cls = _new_map(run_dir / "layout.zarr", src.shape)
             comp = lg.create_array("component_prob", shape=src.shape, chunks=(1024, 1024), dtype="uint8", fill_value=0)
-            TiledNet(spec.layout_model, spec.device).run(src, (cls, comp), progress=sub("layout"))
+            TiledNet(spec.layout_model, spec.device).run(src, (cls, comp), tile_px=1024, progress=sub("layout"), mask=cmask)
             design_info = {}
             if spec.gds:
                 design_info = _apply_design(spec, src, cls, px)
@@ -502,24 +551,33 @@ def run_scan(spec: ScanSpec, runs_root: str | Path = ROOT / "runs", progress: Pr
             done("layout", **design_info)
 
         # 4/5. detectors ------------------------------------------------------------
-        for key, model, group in (("specks", spec.speck_model, "speck"), ("traces", spec.trace_model, "trace")):
-            if finished(key, f"{group}.zarr"):
-                continue
-            stage(key)
-            g, arr = _new_map(run_dir / f"{group}.zarr", src.shape)
-            TiledNet(model, spec.device).run(src, arr, progress=(lambda i, n, key=key: progress(key, 0.5 * i / max(n, 1), dict(STAGES)[key])) if key == "specks" else sub(key))
-            if key == "specks":
-                if spec.anomaly_model and Path(spec.anomaly_model).exists():
-                    ga, aa = _new_map(run_dir / "anomaly.zarr", src.shape)
-                    TiledNet(spec.anomaly_model, spec.device).run(src, aa, progress=lambda i, n, key=key: progress(key, 0.5 + 0.4 * i / max(n, 1), dict(STAGES)[key]))
-                gp, pa = _new_map(run_dir / "paddirt.zarr", src.shape)
-                pad_dirt_map(src, pa, progress=lambda i, n, key=key: progress(key, 0.9 + 0.05 * i / max(n, 1), dict(STAGES)[key]))
-                if spec.reference_threshold > 0:
-                    # every tile against its twins: lone dust on flat field (all cores)
-                    from chipscan.stages.reference import reference_map
+        if not finished("specks", "speck.zarr"):
+            stage("specks")
+            # one pass over the chip feeds all three networks (speck, anomaly, trace): each tile is
+            # read once; the trace map is a by-product the traces stage then keeps
+            g, arr = _new_map(run_dir / "speck.zarr", src.shape)
+            jobs = [(TiledNet(spec.speck_model, spec.device), arr)]
+            if spec.anomaly_model and Path(spec.anomaly_model).exists():
+                ga, aa = _new_map(run_dir / "anomaly.zarr", src.shape)
+                jobs.append((TiledNet(spec.anomaly_model, spec.device), aa))
+            gt, ta = _new_map(run_dir / "trace.zarr", src.shape)
+            jobs.append((TiledNet(spec.trace_model, spec.device), ta))
+            run_nets(src, jobs, progress=lambda i, n: progress("specks", 0.6 * i / max(n, 1), dict(STAGES)["specks"]), mask=cmask)
+            gp, pa = _new_map(run_dir / "paddirt.zarr", src.shape)
+            pad_dirt_map(src, pa, progress=lambda i, n: progress("specks", 0.6 + 0.1 * i / max(n, 1), dict(STAGES)["specks"]), mask=cmask)
+            if spec.reference_threshold > 0:
+                # every tile against its twins: lone dust on flat field (all cores)
+                from chipscan.stages.reference import reference_map
 
-                    reference_map(run_dir / "corrected.zarr", run_dir / "reference.zarr", progress=lambda i, n, key=key: progress(key, 0.95 + 0.05 * i / max(n, 1), dict(STAGES)[key]))
-            done(key)
+                reference_map(run_dir / "corrected.zarr", run_dir / "reference.zarr", progress=lambda i, n: progress("specks", 0.7 + 0.3 * i / max(n, 1), dict(STAGES)["specks"]), mask=cmask)
+            done("specks")
+            stage("traces")
+            done("traces", shared_pass=True)
+        elif not finished("traces", "trace.zarr"):
+            stage("traces")
+            gt, ta = _new_map(run_dir / "trace.zarr", src.shape)
+            TiledNet(spec.trace_model, spec.device).run(src, ta, tile_px=1024, progress=sub("traces"), mask=cmask)
+            done("traces")
         hg, heat = _new_map(run_dir / "heat.zarr", src.shape)
         sp, tr = zarr.open_group(str(run_dir / "speck.zarr"))["0"], zarr.open_group(str(run_dir / "trace.zarr"))["0"]
         for y in range(0, H, 2048):

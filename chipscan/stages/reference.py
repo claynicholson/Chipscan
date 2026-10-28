@@ -147,7 +147,7 @@ def _fallback(img: np.ndarray, ox: int, oy: int, size: int) -> np.ndarray:
 _SRC: dict = {}
 
 
-def reference_map(source_path: str | Path, out_path: str | Path, tile: int = 384, margin: int = 32, workers: int | None = None, progress=None) -> dict:
+def reference_map(source_path: str | Path, out_path: str | Path, tile: int = 384, margin: int = 32, workers: int | None = None, progress=None, mask=None) -> dict:
     """Write residual map (zarr '0', uint8) and per-tile twin counts ('twins') to `out_path`."""
     import zarr
 
@@ -160,6 +160,8 @@ def reference_map(source_path: str | Path, out_path: str | Path, tile: int = 384
     ny, nx = -(-H // tile), -(-W // tile)
     tw = np.zeros((ny, nx), np.int16)
     jobs = [(str(source_path), x, y, tile, margin) for y in range(0, H, tile) for x in range(0, W, tile)]
+    if mask is not None:  # off the chip: nothing to compare (twin count stays 0)
+        jobs = [j for j in jobs if mask.any_in(j[1], j[2], j[1] + tile, j[2] + tile)]
     workers = workers or max(1, (os.cpu_count() or 4) - 2)
     done = 0
     with ProcessPoolExecutor(max_workers=workers) as ex:

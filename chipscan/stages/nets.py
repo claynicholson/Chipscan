@@ -447,57 +447,119 @@ def train(
 class TiledNet:
     """Run a UNet over a whole ImageSource, writing uint8 maps into zarr arrays."""
 
-    def __init__(self, model_path: str | Path, device: str = "auto", batch_size: int = 8):
+    def __init__(self, model_path: str | Path, device: str = "auto", batch_size: int = 8, half: bool = True):
         self.device = pick_device(device)
         self.model = UNet.load(model_path, self.device).to(self.device).eval()
         self.batch_size = batch_size
         self.layout = self.model.out_channels == 4
+        # half precision on a GPU: ~2x throughput, maps identical to the uint8 they are stored in
+        self.half = half and self.device.type in ("cuda", "mps")
+        if self.half:
+            self.model = self.model.half()
+        if self.device.type == "cuda":
+            self.model = self.model.to(memory_format=torch.channels_last)
+            torch.backends.cudnn.benchmark = True
 
     @torch.no_grad()
-    def predict(self, tiles: np.ndarray) -> np.ndarray:
-        x = torch.from_numpy(tiles.astype(np.float32))[:, None]
+    def predict(self, tiles: np.ndarray | torch.Tensor) -> np.ndarray:
+        x = tiles if isinstance(tiles, torch.Tensor) else torch.from_numpy(np.asarray(tiles, np.float32))
+        if x.ndim == 3:
+            x = x[:, None]
+        x = x.to(self.device, non_blocking=True)
+        x = x.half() if self.half else x.float()
         h, w = x.shape[-2:]
         m = 2**self.model.depth
         ph, pw = (-h) % m, (-w) % m
         if ph or pw:
             x = F.pad(x, (0, pw, 0, ph), mode="reflect")
-        y = self.model(x.to(self.device))
+        if self.device.type == "cuda":
+            x = x.contiguous(memory_format=torch.channels_last)
+        y = self.model(x).float()
         if self.layout:
             return torch.softmax(y, 1).cpu().numpy()[:, :, :h, :w]
         return torch.sigmoid(y).cpu().numpy()[:, 0, :h, :w]
 
-    def run(self, source: ImageSource, store, tile_px: int = 768, margin_px: int = 48, progress: Callable[[int, int], None] | None = None, region=None):
+    def run(self, source: ImageSource, store, tile_px: int = 768, margin_px: int = 48, progress: Callable[[int, int], None] | None = None, region=None, mask=None):
         """Binary nets: store[...] = uint8 probability.  Layout net: store = (class map, component prob)."""
-        from chipscan.tiling import make_tiles
+        run_nets(source, [(self, store)], tile_px=tile_px, margin_px=margin_px, progress=progress, region=region, mask=mask)
 
-        tiles = make_tiles(source.shape, tile_px, margin_px, region)
+
+def run_nets(source: ImageSource, jobs: list, tile_px: int = 1024, margin_px: int = 48, progress: Callable[[int, int], None] | None = None, region=None, mask=None, batch_size: int | None = None, io_threads: int = 6) -> int:
+    """Several networks over one scan in ONE pass: every tile is read once and fed to all of them.
+
+    Reads run ahead in a thread pool (zarr decompression releases the GIL), writes go behind in
+    another, so the GPU is never waiting on disk.  Tiles outside `mask` (a ChipMask) are skipped:
+    their maps stay 0.  Returns the number of tiles run."""
+    from concurrent.futures import ThreadPoolExecutor
+
+    from chipscan.tiling import make_tiles
+
+    tiles = make_tiles(source.shape, tile_px, margin_px, region)
+    if mask is not None:
+        tiles = [t for t in tiles if mask.any_in(*t.core.to_int())]
+    bs = batch_size or max(n.batch_size for n, _ in jobs)
+    if jobs and jobs[0][0].device.type == "cuda":
+        bs = max(bs, 16)
+
+    def read(t):
+        x0, y0, x1, y1 = t.read.to_int()
+        return t, source.read_region(x0, y0, x1, y1)
+
+    def write(net, store, t, o):
+        sl = t.core_slice_in_read
+        cx0, cy0, cx1, cy1 = t.core.to_int()
+        if net.layout:
+            o = o[:, sl[0], sl[1]]
+            store[0][cy0:cy1, cx0:cx1] = o.argmax(0).astype(np.uint8)
+            store[1][cy0:cy1, cx0:cx1] = np.rint(o[2] * 255).astype(np.uint8)
+        else:
+            store[cy0:cy1, cx0:cx1] = np.rint(o[sl] * 255).astype(np.uint8)
+
+    done = 0
+    pending: list = []
+    with ThreadPoolExecutor(io_threads) as rd, ThreadPoolExecutor(io_threads) as wr:
+        from collections import deque
+
+        ahead: deque = deque()
+        it = iter(tiles)
+
+        def refill():  # read ahead of the GPU, a few batches deep (bounded memory)
+            while len(ahead) < 4 * bs:
+                t = next(it, None)
+                if t is None:
+                    return
+                ahead.append(rd.submit(read, t))
+
         batch: list = []
 
         def flush():
-            arr = np.stack([b[1] for b in batch])
-            out = self.predict(arr)
-            for (t, _), o in zip(batch, out, strict=True):
-                sl = t.core_slice_in_read
-                cx0, cy0, cx1, cy1 = t.core.to_int()
-                if self.layout:
-                    o = o[:, sl[0], sl[1]]
-                    store[0][cy0:cy1, cx0:cx1] = o.argmax(0).astype(np.uint8)
-                    store[1][cy0:cy1, cx0:cx1] = np.rint(o[2] * 255).astype(np.uint8)
-                else:
-                    store[cy0:cy1, cx0:cx1] = np.rint(o[sl] * 255).astype(np.uint8)
+            nonlocal done
+            groups: dict = {}
+            for t, a in batch:  # edge tiles are smaller: one forward pass per shape
+                groups.setdefault(a.shape, []).append((t, a))
+            for grp in groups.values():
+                x = torch.from_numpy(np.stack([a for _, a in grp])).float().div_(255.0)
+                if x.device.type == "cpu" and jobs[0][0].device.type == "cuda":
+                    x = x.pin_memory()
+                for net, store in jobs:
+                    out = net.predict(x)
+                    for (t, _), o in zip(grp, out, strict=True):
+                        pending.append(wr.submit(write, net, store, t, o))
+            done += len(batch)
             batch.clear()
-
-        for i, t in enumerate(tiles):
-            x0, y0, x1, y1 = t.read.to_int()
-            batch.append((t, source.read_region(x0, y0, x1, y1).astype(np.float32) / 255.0))
-            if len(batch) == self.batch_size or (batch and batch[0][1].shape != batch[-1][1].shape):
-                if batch[0][1].shape != batch[-1][1].shape:
-                    last = batch.pop()
-                    flush()
-                    batch.append(last)
-                else:
-                    flush()
+            while len(pending) > 64:  # bound memory held by queued writes
+                pending.pop(0).result()
             if progress:
-                progress(i + 1, len(tiles))
+                progress(done, len(tiles))
+
+        refill()
+        while ahead:
+            batch.append(ahead.popleft().result())
+            refill()
+            if len(batch) >= bs:
+                flush()
         if batch:
             flush()
+        for f in pending:
+            f.result()
+    return len(tiles)
