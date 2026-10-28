@@ -304,6 +304,7 @@ def add(
     component_layers: str = typer.Option("", help="GDS layers holding junctions/components, e.g. '92/0'"),
     runs: Path = typer.Option(Path("runs"), help="Where scans are stored (the viewer reads this folder)"),
     no_straighten: bool = typer.Option(False, help="Skip tilt and tiling correction"),
+    speck_model: Path | None = typer.Option(None, help="Use this speck model instead of the default"),
 ):
     """Run the full flow on one image: straighten, fix tiling, find traces/components, detect specks,
     trace errors and component errors, weight by risk.  The scan then shows up in the viewer."""
@@ -322,6 +323,8 @@ def add(
         component_layers=[t for t in component_layers.split(",") if t],
         straighten=not no_straighten,
     )
+    if speck_model:
+        spec.speck_model = str(speck_model.resolve())
     with Progress(TextColumn("{task.description}"), BarColumn(), TextColumn("{task.percentage:>3.0f}%"), TimeElapsedColumn()) as prog:
         tasks = {k: prog.add_task(lab, total=1.0) for k, lab in STAGES}
         run_dir = run_scan(spec, runs, lambda st, f, m: prog.update(tasks[st], completed=f))
