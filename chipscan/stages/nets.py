@@ -369,6 +369,13 @@ def evaluate(model, ds, dev, kind: str, batch_size: int = 16) -> dict:
     return {"iou": tp / max(tp + fp + fn, 1), "recall": tp / max(tp + fn, 1), "precision": tp / max(tp + fp, 1), "clean_tile_fa": n_fa / max(n_clean, 1)}
 
 
+def _reseed_worker(worker_id: int) -> None:
+    """Every loader process draws its own tiles (they would otherwise share the parent's rng)."""
+    info = torch.utils.data.get_worker_info()
+    ds = info.dataset
+    ds.rng = np.random.default_rng([int(torch.initial_seed() % 2**32), worker_id])
+
+
 def train(
     kind: str,
     dataset: Dataset,
@@ -383,7 +390,9 @@ def train(
     init_from: str | Path | None = None,
     log: Callable[[str], None] = print,
     pos_weight: float = 3.0,
+    num_workers: int = 0,
 ) -> list[dict]:
+    """`num_workers` > 0 builds tiles in that many processes (each with its own random stream)."""
     dev = pick_device(device)
     out_ch = 4 if kind == "layout" else 1
     model = (UNet.load(init_from, dev) if init_from else UNet(1, base, depth, out_channels=out_ch)).to(dev)
@@ -394,10 +403,22 @@ def train(
     out_path.parent.mkdir(parents=True, exist_ok=True)
     hist, best = [], -1e9
     log(f"training {kind} UNet(base={model.base}, depth={model.depth}, out={out_ch}) on {dev}: {len(dataset)} tiles x {epochs} epochs")
+    loader = DataLoader(
+        dataset,
+        batch_size=batch_size,
+        shuffle=True,
+        drop_last=True,
+        num_workers=num_workers,
+        persistent_workers=num_workers > 0,
+        worker_init_fn=_reseed_worker if num_workers > 0 else None,
+        pin_memory=dev.type == "cuda",
+    )
     for ep in range(epochs):
         model.train()
         t0, tot, n = time.time(), 0.0, 0
-        for batch in DataLoader(dataset, batch_size=batch_size, shuffle=True, drop_last=True):
+        for batch in loader:
+            if dev.type == "cuda":
+                batch = [b.to(dev, non_blocking=True) for b in batch]
             x, y = batch[0].to(dev), batch[1].to(dev)
             w = batch[2].to(dev) if len(batch) > 2 else None
             out = model(x)
