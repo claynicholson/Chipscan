@@ -172,6 +172,12 @@
         </div>
       </section>
 
+      <section class="card hidden" id="metro-card">
+        <div class="card-head"><span>Line &amp; gap widths</span><span id="metro-n" class="mono muted"></span></div>
+        <table class="metro"><thead><tr><th></th><th>Design</th><th>Measured</th><th>±</th></tr></thead><tbody id="metro-body"></tbody></table>
+        <p class="hint">Measured at every line structure against the GDS. Click a row to see its worst site.</p>
+      </section>
+
       <section class="card hidden" id="sens-scan">
         <div class="card-head"><span>Sensitivity</span></div>
         <sl-range id="thr-speck" min="0.1" max="0.95" step="0.05" value="0.5" label="Speck threshold" help-text="Lower finds fainter dirt."></sl-range>

@@ -464,3 +464,14 @@ code { background: var(--surface-3); color: var(--text); }
 .watch-item > sl-icon { font-size: 18px; flex: none; }
 .watch-text { display: flex; flex-direction: column; min-width: 0; flex: 1; color: var(--text); }
 .watch-text .mono { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* metrology card */
+table.metro { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+table.metro th { text-align: left; font-weight: 500; color: var(--text-3); padding: 4px 6px; }
+table.metro td { padding: 6px; border-top: 1px solid var(--border); }
+.metro-row { cursor: pointer; }
+.metro-row:hover td { background: #f5f5f7; }
+.metro-kind { display: inline-block; padding: 1px 8px; border-radius: 999px; font-size: 11px; font-weight: 600; }
+.metro-kind.gap { background: #eaf3ff; color: #0071e3; }
+.metro-kind.metal { background: #f3ecff; color: #8e44d9; }
+.metro-bad { color: #ff375f; font-weight: 600; }

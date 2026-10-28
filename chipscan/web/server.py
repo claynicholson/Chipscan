@@ -697,6 +697,18 @@ def create_app(config_paths: list[Path], db_path: Path | None = None, runs_root:
             )
         return out
 
+    @app.get("/api/runs/{name}/metrology")
+    def metrology(name: str):
+        """CPW / gap widths measured against the design (cpw.json), main structures first."""
+        r = get_run(name)
+        f = Path(r.out_dir) / "cpw.json"
+        if not f.exists():
+            return {"available": False}
+        m = json.loads(f.read_text())
+        rows = [s for s in m.get("summary", []) if s.get("n", 0) >= 20 and s.get("resolved", True)]
+        rows.sort(key=lambda s: -s["n"])
+        return {"available": True, "pixel_size_um": m.get("pixel_size_um"), "structures": rows[:8], "measured": len(m.get("rows", []))}
+
     @app.get("/api/runs/{name}/defects")
     def defects(name: str):
         r = get_run(name)

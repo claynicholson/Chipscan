@@ -133,6 +133,7 @@
     }
     $("layer-design").classList.toggle("hidden", !!run.anomaly_run);
     buildViewer();
+    refreshMetrology(name);
     refreshList();
     refreshStats();
     renderInspector();
@@ -590,6 +591,20 @@
     }).join("");
   }
 
+  async function refreshMetrology(name) {
+    let m = { available: false };
+    try { m = await api(`/api/runs/${encodeURIComponent(name)}/metrology`); } catch (e) {}
+    $("metro-card").classList.toggle("hidden", !m.available);
+    if (!m.available) return;
+    $("metro-n").textContent = `${m.measured.toLocaleString()} sites`;
+    $("metro-body").innerHTML = m.structures.map(s => {
+      const bad = Math.abs(s.bias_um) > 0.15 * s.nominal_um;
+      return `<tr class="metro-row" data-x="${s.worst_at_px[0]}" data-y="${s.worst_at_px[1]}">
+        <td><span class="metro-kind ${s.kind}">${s.kind === "gap" ? "Gap" : "Line"}</span></td>
+        <td class="mono">${s.nominal_um} µm</td><td class="mono ${bad ? "metro-bad" : ""}">${s.mean_um.toFixed(2)}</td><td class="mono muted">${s.std_um.toFixed(2)}</td></tr>`;
+    }).join("");
+  }
+
   async function refreshWatch() {
     let ws = [];
     try { ws = await api("/api/watch"); } catch (e) { return; }
@@ -783,6 +798,11 @@
     $("reviewer").value = store.get("chipscan.reviewer") || "";
     $("reviewer").addEventListener("sl-change", e => store.set("chipscan.reviewer", e.target.value));
     $("watch-start").addEventListener("click", () => startWatch().catch(fail));
+    $("metro-body").addEventListener("click", e => {
+      const tr = e.target.closest(".metro-row"); if (!tr || !viewer) return;
+      const x = +tr.dataset.x, y = +tr.dataset.y, s = 400;
+      viewer.viewport.fitBounds(imageRect(x - s / 2, y - s / 2, s, s), false);
+    });
     $("watch-list").addEventListener("click", async e => {
       const b = e.target.closest(".watch-stop"); if (!b) return;
       await fetch(`/api/watch?path=${encodeURIComponent(b.dataset.path)}`, { method: "DELETE" }); refreshWatch();

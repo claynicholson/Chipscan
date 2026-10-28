@@ -20,6 +20,8 @@ from pathlib import Path
 
 import cv2
 import numpy as np
+
+from chipscan import default_workers
 from scipy import ndimage as ndi
 
 SCALE = 1000.0  # residual (0..1 grey) -> uint8 units; 0.255 saturates
@@ -162,7 +164,7 @@ def reference_map(source_path: str | Path, out_path: str | Path, tile: int = 384
     jobs = [(str(source_path), x, y, tile, margin) for y in range(0, H, tile) for x in range(0, W, tile)]
     if mask is not None:  # off the chip: nothing to compare (twin count stays 0)
         jobs = [j for j in jobs if mask.any_in(j[1], j[2], j[1] + tile, j[2] + tile)]
-    workers = workers or max(1, (os.cpu_count() or 4) - 2)
+    workers = workers or default_workers()
     done = 0
     with ProcessPoolExecutor(max_workers=workers) as ex:
         for x0, y0, arr, n in ex.map(_tile_residual, jobs, chunksize=16):

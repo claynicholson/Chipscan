@@ -25,6 +25,7 @@ from pathlib import Path
 import numpy as np
 import zarr
 
+from chipscan import default_workers
 from chipscan.io.readers import ImageSource, PyramidSource
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -162,7 +163,7 @@ def pad_dirt_map(source: ImageSource, store, tile: int = 1024, margin: int = 160
     tiles = make_tiles(source.shape, tile, margin)
     if mask is not None:
         tiles = [t for t in tiles if mask.any_in(*t.core.to_int())]
-    workers = workers if workers is not None else max(1, (os.cpu_count() or 4) - 2)
+    workers = workers if workers is not None else default_workers()
 
     def put(i, t, arr):
         cx0, cy0, cx1, cy1 = t.core.to_int()
@@ -294,7 +295,7 @@ def check_candidates(source: ImageSource, run_dir: Path, spec: ScanSpec, items: 
     from concurrent.futures import ProcessPoolExecutor
 
     args = (source, str(run_dir), asdict(spec))
-    workers = workers if workers is not None else max(1, (os.cpu_count() or 4) - 2)
+    workers = workers if workers is not None else default_workers()
     if workers <= 1 or len(items) < 200:
         _check_init(*args)
         out = []

@@ -305,6 +305,7 @@ def add(
     runs: Path = typer.Option(Path("runs"), help="Where scans are stored (the viewer reads this folder)"),
     no_straighten: bool = typer.Option(False, help="Skip tilt and tiling correction"),
     speck_model: Path | None = typer.Option(None, help="Use this speck model instead of the default"),
+    resume: bool = typer.Option(False, help="Keep the stages an interrupted run of this name already finished"),
 ):
     """Run the full flow on one image: straighten, fix tiling, find traces/components, detect specks,
     trace errors and component errors, weight by risk.  The scan then shows up in the viewer."""
@@ -327,7 +328,7 @@ def add(
         spec.speck_model = str(speck_model.resolve())
     with Progress(TextColumn("{task.description}"), BarColumn(), TextColumn("{task.percentage:>3.0f}%"), TimeElapsedColumn()) as prog:
         tasks = {k: prog.add_task(lab, total=1.0) for k, lab in STAGES}
-        run_dir = run_scan(spec, runs, lambda st, f, m: prog.update(tasks[st], completed=f))
+        run_dir = run_scan(spec, runs, lambda st, f, m: prog.update(tasks[st], completed=f), resume=resume)
     summ = json.loads((run_dir / "scan.json").read_text())["summary"]
     for g in ("speck", "trace", "component"):
         s = summ[g]
