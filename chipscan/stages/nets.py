@@ -421,7 +421,10 @@ def train(
                 batch = [b.to(dev, non_blocking=True) for b in batch]
             x, y = batch[0].to(dev), batch[1].to(dev)
             w = batch[2].to(dev) if len(batch) > 2 else None
-            out = model(x)
+            # bf16 autocast on CUDA: ~2x faster, no loss scaling needed; loss in fp32
+            with torch.autocast("cuda", dtype=torch.bfloat16, enabled=dev.type == "cuda"):
+                out = model(x)
+            out = out.float()
             loss = layout_loss(out, y) if kind == "layout" else binary_loss(out, y, pos_weight, weight=w)
             opt.zero_grad(set_to_none=True)
             loss.backward()
