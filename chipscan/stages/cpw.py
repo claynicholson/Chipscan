@@ -135,5 +135,44 @@ def summarize(rows: list[dict]) -> list[dict]:
         m = np.array([r["measured_um"] for r in g])
         e = m - nom
         worst = max(g, key=lambda r: abs(r["error_um"]))
-        out.append({"kind": kind, "nominal_um": nom, "n": len(g), "mean_um": round(float(m.mean()), 2), "bias_um": round(float(e.mean()), 2), "std_um": round(float(m.std()), 2), "worst_error_um": round(worst["error_um"], 2), "worst_at_px": [worst["col_px"], worst["row_px"]]})
+        out.append({"kind": kind, "nominal_um": nom, "n": len(g), "resolved": bool(nom >= 3.0 * float(np.median([r.get("px_um", 1.63) for r in g]))), "mean_um": round(float(m.mean()), 2), "bias_um": round(float(e.mean()), 2), "std_um": round(float(m.std()), 2), "worst_error_um": round(worst["error_um"], 2), "worst_at_px": [worst["col_px"], worst["row_px"]]})
     return out
+
+
+def structure_groups(runs: list[tuple[int, float, float]], max_run_um: float = 150.0, min_runs: int = 3) -> list[tuple[float, float]]:
+    """Clusters of narrow runs (a line structure) along a cut, as (x0, x1) design windows with
+    a little open ground on each side."""
+    groups, cur = [], []
+    for m, s, w in runs:
+        if w <= max_run_um:
+            cur.append((s, w))
+        else:
+            if len(cur) >= min_runs:
+                groups.append((cur[0][0] - 20.0, cur[-1][0] + cur[-1][1] + 20.0))
+            cur = []
+    if len(cur) >= min_runs:
+        groups.append((cur[0][0] - 20.0, cur[-1][0] + cur[-1][1] + 20.0))
+    return groups
+
+
+def survey_wafer(src: ImageSource, wd: WaferDesign, reg: WaferRegistration, pitch_um: float = 2000.0, min_score: float = 0.8, progress=None) -> list[dict]:
+    """Cuts every `pitch_um` down each reticle; every line structure on a cut is measured on its own."""
+    rows: list[dict] = []
+    reticles = [p for p in wd.placements if p.cell.startswith("RETICLE")]
+    half = 20600.0
+    cuts = [(p, y) for p in reticles for y in np.arange(p.origin[1] - half + pitch_um / 2, p.origin[1] + half, pitch_um)]
+    for i, (p, y) in enumerate(cuts):
+        x0, x1 = p.origin[0] - half, p.origin[0] + half
+        for gx0, gx1 in structure_groups(design_runs(wd, float(y), x0, x1, res_um=0.5)):
+            runs, score = measure_cut(src, wd, reg, float(y), gx0, gx1)
+            if score < min_score:
+                continue
+            for r in runs:
+                d = asdict(r)
+                d["error_um"] = round(r.error_um, 3)
+                d["cut_score"] = round(score, 3)
+                d["reticle"] = p.cell
+                rows.append(d)
+        if progress and i % 10 == 0:
+            progress(i + 1, len(cuts))
+    return rows
