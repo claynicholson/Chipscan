@@ -44,7 +44,63 @@ def _finding_mask(d: dict, ox: int, oy: int, shape: tuple[int, int]) -> np.ndarr
     return m.astype(bool)
 
 
-def assess(findings: list[dict], class_map, pixel_size_um: float | None, window_um: float = 80.0) -> list[dict]:
+def local_feature(source, d: dict, px: float, reach_px: int = 60) -> dict | None:
+    """Width and kind of the gap or line a finding sits in, from profiles that pass *beside* it.
+
+    The dominant edge direction around the finding decides the profile direction (across the
+    feature); profiles are taken just before and after the finding along the feature, so the
+    finding itself does not disturb them.  Edges are the dark outline minima; the feature is the
+    stretch between the nearest edge on each side of the finding's centre.  Darker than its
+    surroundings = gap (substrate), brighter = line (metal)."""
+    from chipscan.stages.cpw import edge_dips
+
+    b = d["bbox_px"]
+    cx, cy = (b["x0"] + b["x1"]) / 2, (b["y0"] + b["y1"]) / 2
+    hw, hh = (b["x1"] - b["x0"]) / 2 + 3, (b["y1"] - b["y0"]) / 2 + 3
+    R = int(reach_px + max(hw, hh))
+    x0, y0 = int(cx - R), int(cy - R)
+    win = source.read_region(x0, y0, x0 + 2 * R, y0 + 2 * R).astype(np.float64)
+    if win.ndim == 3:
+        win = win.mean(-1)
+    gx, gy = ndi.sobel(ndi.gaussian_filter(win, 1.0), 1), ndi.sobel(ndi.gaussian_filter(win, 1.0), 0)
+    m = np.ones_like(win, bool)
+    m[int(R - hh) : int(R + hh), int(R - hw) : int(R + hw)] = False  # not the finding itself
+    jxx, jyy = float((gx * gx)[m].sum()), float((gy * gy)[m].sum())
+    across_x = jxx >= jyy  # strong x-gradients: vertical feature, profile runs along x
+    widths = []
+    for off in (-(hh if across_x else hw) - 4, (hh if across_x else hw) + 4):
+        if across_x:
+            r = int(round(R + off))
+            if not (2 <= r < 2 * R - 2):
+                continue
+            prof = win[r - 2 : r + 3].mean(0)
+            c = R
+        else:
+            cc = int(round(R + off))
+            if not (2 <= cc < 2 * R - 2):
+                continue
+            prof = win[:, cc - 2 : cc + 3].mean(1)
+            c = R
+        e = edge_dips(prof, min_depth=5.0)
+        left, right = e[e < c], e[e > c]
+        if not len(left) or not len(right):
+            continue
+        a_, b_ = left.max(), right.min()
+        inner = prof[int(np.ceil(a_)) + 1 : int(b_)]
+        outer = np.r_[prof[max(0, int(a_) - 6) : max(0, int(a_) - 1)], prof[int(b_) + 2 : int(b_) + 7]]
+        if len(inner) < 1 or len(outer) < 2:
+            continue
+        widths.append((b_ - a_, float(inner.mean() - outer.mean())))
+    if not widths:
+        return None
+    w = float(np.median([x[0] for x in widths])) * px
+    contrast = float(np.median([x[1] for x in widths]))
+    if w > 200:
+        return None
+    return {"kind": "gap" if contrast < 0 else "line", "width_um": round(w, 2), "orientation": "vertical" if across_x else "horizontal"}
+
+
+def assess(findings: list[dict], class_map, pixel_size_um: float | None, window_um: float = 80.0, source=None) -> list[dict]:
     """Add d_jj_um, d_trace_um, size_um, on_jj, on_trace, risk (0-100) and risk_level to each finding."""
     px = pixel_size_um or 1.0
     H, W = class_map.shape
@@ -66,6 +122,20 @@ def assess(findings: list[dict], class_map, pixel_size_um: float | None, window_
         d_tr = float(ndi.distance_transform_edt(~trace)[own].min()) * px if trace.any() else window_um
         area_um2 = float(d.get("area_um2") or d.get("area_px", 1) * px * px)
         size = 2.0 * np.sqrt(area_um2 / np.pi)
+        # the feature (gap or line) the finding sits in, measured from the image beside it
+        gap_w, bridges, feat = None, False, None
+        if source is not None and d.get("group") == "speck":
+            feat = local_feature(source, d, px)
+            if feat is not None:
+                ys_, xs_ = np.nonzero(own)
+                extent = float(max(np.ptp(xs_) + 1, np.ptp(ys_) + 1) * px) if len(xs_) else size
+                if feat["kind"] == "gap":
+                    gap_w = feat["width_um"]
+                    # it can short the gap when it reaches across it
+                    bridges = extent >= 0.8 * gap_w
+        d["feature"] = feat
+        d["gap_um"] = round(gap_w, 2) if gap_w else None
+        d["bridges_gap"] = bool(bridges)
         jj = float(np.exp(-d_jj / L_JJ_UM))
         tr = float(np.exp(-d_tr / L_TRACE_UM))
         sz = float(1.0 - np.exp(-size / SIZE_UM))
@@ -85,7 +155,18 @@ def assess(findings: list[dict], class_map, pixel_size_um: float | None, window_
             # so an unconfirmed trace finding should not outrank dirt or a component error on a JJ
             r = 0.7 * (0.45 + 0.35 * jj + 0.2 * sz) * (0.6 + 0.4 * conf)
         else:  # speck
-            r = sz * (0.12 + 0.88 * max(jj, 0.65 * tr)) * (0.7 + 0.3 * conf)
+            # physical failure modes, worst one wins:
+            #   short    - reaches across a gap between two conductors (any size that spans it)
+            #   junction - near a JJ: shifts its critical current / adds loss at the junction
+            #   loss     - in or at a gap: lossy dielectric where the field is
+            #   cosmetic - anywhere else, by size
+            p_short = 0.95 if bridges else 0.0
+            p_jj = jj * (0.35 + 0.65 * sz)
+            in_gap = bool(feat and feat["kind"] == "gap")
+            p_loss = (0.55 if in_gap else 0.25) * tr * (0.3 + 0.7 * sz)  # the field lives in the gaps
+            p_floor = 0.12 * sz
+            r = max(p_short, p_jj, p_loss, p_floor) * (0.7 + 0.3 * conf)
+            d["failure_mode"] = ["short", "junction", "loss", "cosmetic"][int(np.argmax([p_short, p_jj, p_loss, p_floor]))]
             if d.get("class") == "probe_mark":
                 r *= 0.6  # pads are made to be probed: a scrub there matters only if it is large
         if d.get("verified") is False:

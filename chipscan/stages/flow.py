@@ -599,7 +599,7 @@ def run_scan(spec: ScanSpec, runs_root: str | Path = ROOT / "runs", progress: Pr
         st_recs, info = extract_findings(run_dir, spec, src, progress=sub("risk"))
         (run_dir / "dropped.json").write_text(json.dumps(info.pop("dropped", [])))
         findings = st_recs + comp_recs
-        assess(findings, cls, px)
+        assess(findings, cls, px, source=src)
         findings.sort(key=lambda d: -d["risk"])
         for i, d in enumerate(findings):
             d["id"] = i
@@ -675,7 +675,7 @@ def reprocess(run_dir: Path) -> dict:
     st_recs, info = extract_findings(run_dir, spec, src)
     (run_dir / "dropped.json").write_text(json.dumps(info.pop("dropped", [])))
     findings = st_recs + comp_recs
-    assess(findings, cls, px)
+    assess(findings, cls, px, source=src)
     findings.sort(key=lambda d: -d["risk"])
     for i, d in enumerate(findings):
         d["id"] = i
@@ -699,7 +699,7 @@ def refresh_findings(run_dir: Path, spec: ScanSpec) -> list[dict]:
     src = PyramidSource(run_dir / "corrected.zarr")
     recs, _ = extract_findings(run_dir, spec, src)
     cls = zarr.open_group(str(run_dir / "layout.zarr"), mode="r")["0"]
-    assess(recs, cls, spec.pixel_size_um)
+    assess(recs, cls, spec.pixel_size_um, source=src)
     findings = sorted(recs + comps, key=lambda d: -d["risk"])
     for i, d in enumerate(findings):
         d["id"] = i
