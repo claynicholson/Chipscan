@@ -590,11 +590,31 @@
     }).join("");
   }
 
+  async function refreshWatch() {
+    let ws = [];
+    try { ws = await api("/api/watch"); } catch (e) { return; }
+    $("watch-list").innerHTML = ws.map(w => `<div class="watch-item"><sl-icon name="broadcast"></sl-icon>
+      <div class="watch-text"><b>Watching</b><span class="mono muted">${esc(w.path)}</span><span class="muted">${w.queued.length} image${w.queued.length === 1 ? "" : "s"} inspected</span></div>
+      <sl-icon-button name="x-lg" label="Stop watching" class="watch-stop" data-path="${esc(w.path)}"></sl-icon-button></div>`).join("");
+  }
+
+  async function startWatch() {
+    const path = $("watch-path").value.trim();
+    if (!path) { notify("Enter the folder the microscope saves to.", "warning", "exclamation-triangle"); return; }
+    const r = await fetch("/api/watch", { method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ path, pixel_size_um: $("watch-px").value || null, straighten: $("scan-straighten").checked, include_existing: $("watch-existing").checked }) });
+    if (!r.ok) { const e = await r.json().catch(() => ({})); notify(e.detail || "Could not watch that folder.", "danger", "exclamation-octagon"); return; }
+    $("add-dialog").hide();
+    notify(`Watching ${path}: new images will be inspected automatically.`, "success", "broadcast");
+    await refreshWatch(); pollJobs(true);
+  }
+
   async function pollJobs(force) {
     clearTimeout(jobsTimer);
     let jobs = [];
     try { jobs = await api("/api/jobs"); } catch (e) { jobsTimer = setTimeout(pollJobs, 5000); return; }
     renderJobs(jobs);
+    refreshWatch();
     for (const j of jobs) {
       const prev = lastJobs[j.id];
       if (prev && prev !== j.status) {
@@ -762,6 +782,11 @@
 
     $("reviewer").value = store.get("chipscan.reviewer") || "";
     $("reviewer").addEventListener("sl-change", e => store.set("chipscan.reviewer", e.target.value));
+    $("watch-start").addEventListener("click", () => startWatch().catch(fail));
+    $("watch-list").addEventListener("click", async e => {
+      const b = e.target.closest(".watch-stop"); if (!b) return;
+      await fetch(`/api/watch?path=${encodeURIComponent(b.dataset.path)}`, { method: "DELETE" }); refreshWatch();
+    });
   }
 
   const START_HASH = location.hash;

@@ -456,3 +456,11 @@ code { background: var(--surface-3); color: var(--text); }
 .run-select::part(listbox) { max-height: min(60vh, 480px); }
 .run-select sl-option::part(base) { padding-block: 6px; }
 .run-select small[slot="suffix"] { color: var(--text-3); font-variant-numeric: tabular-nums; }
+
+/* live folder watching */
+.watch-list:empty { display: none; }
+.watch-list { display: flex; flex-direction: column; gap: 8px; margin-bottom: 12px; }
+.watch-item { display: flex; align-items: center; gap: 10px; padding: 10px 12px; border-radius: 12px; background: #eaf3ff; color: #0071e3; }
+.watch-item > sl-icon { font-size: 18px; flex: none; }
+.watch-text { display: flex; flex-direction: column; min-width: 0; flex: 1; color: var(--text); }
+.watch-text .mono { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

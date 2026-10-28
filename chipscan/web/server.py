@@ -506,6 +506,103 @@ class Jobs:
             return sorted((json.loads(json.dumps(j)) for j in self.jobs.values()), key=lambda j: -j["created"])
 
 
+IMAGE_EXT = {".png", ".jpg", ".jpeg", ".tif", ".tiff", ".jp2", ".bmp"}
+
+
+class Watcher:
+    """Live scans: watch microscope export folders and inspect every new image automatically.
+
+    PRECiV (or any acquisition software) writes the stitched image into a folder; once a new
+    image file has stopped growing for `settle_s`, it is queued like an uploaded scan. Watched
+    folders survive restarts (runs/_watch.json). Files present when watching starts are skipped
+    unless `include_existing`."""
+
+    def __init__(self, runs_root: Path, jobs: "Jobs", poll_s: float = 5.0, settle_s: float = 10.0):
+        self.runs_root, self.jobs, self.poll_s, self.settle_s = runs_root, jobs, poll_s, settle_s
+        self.cfg = runs_root / "_watch.json"
+        self.folders: dict[str, dict] = {}
+        self.lock = threading.Lock()
+        if self.cfg.exists():
+            try:
+                self.folders = json.loads(self.cfg.read_text())
+            except Exception:
+                self.folders = {}
+        threading.Thread(target=self._loop, daemon=True).start()
+
+    def _save(self) -> None:
+        self.cfg.parent.mkdir(parents=True, exist_ok=True)
+        self.cfg.write_text(json.dumps(self.folders, indent=2))
+
+    def _images(self, folder: Path) -> dict[str, tuple[int, float]]:
+        out = {}
+        for f in folder.rglob("*"):
+            if f.suffix.lower() in IMAGE_EXT and f.is_file() and not f.name.startswith("."):
+                st = f.stat()
+                out[str(f)] = (st.st_size, st.st_mtime)
+        return out
+
+    def add(self, path: str, pixel_size_um: float | None = None, straighten: bool = True, include_existing: bool = False) -> dict:
+        folder = Path(path).expanduser()
+        if not folder.is_dir():
+            raise ValueError(f"not a folder on this computer: {path}")
+        seen = [] if include_existing else list(self._images(folder))
+        with self.lock:
+            self.folders[str(folder)] = {"path": str(folder), "pixel_size_um": pixel_size_um, "straighten": straighten, "seen": seen, "pending": {}, "started": time.time(), "queued": []}
+            self._save()
+            return self._public(self.folders[str(folder)])
+
+    def remove(self, path: str) -> None:
+        with self.lock:
+            self.folders.pop(str(Path(path).expanduser()), None)
+            self._save()
+
+    @staticmethod
+    def _public(w: dict) -> dict:
+        return {k: w[k] for k in ("path", "pixel_size_um", "straighten", "started", "queued")}
+
+    def list(self) -> list[dict]:
+        with self.lock:
+            return [self._public(w) for w in self.folders.values()]
+
+    def _loop(self) -> None:
+        from chipscan.stages.flow import ScanSpec
+
+        while True:
+            time.sleep(self.poll_s)
+            with self.lock:
+                items = list(self.folders.values())
+            for w in items:
+                folder = Path(w["path"])
+                if not folder.is_dir():
+                    continue
+                try:
+                    now = self._images(folder)
+                except OSError:
+                    continue
+                changed = False
+                for f, (size, mtime) in now.items():
+                    if f in w["seen"]:
+                        continue
+                    prev = w["pending"].get(f)
+                    if prev is None or prev[0] != size:  # still being written
+                        w["pending"][f] = [size, time.time()]
+                        continue
+                    if time.time() - prev[1] < self.settle_s:
+                        continue
+                    name = _slug(Path(f).stem)
+                    if (self.runs_root / name / "scan.json").exists():
+                        name = f"{name}_{time.strftime('%m%d_%H%M%S')}"
+                    spec = ScanSpec(name=name, image=f, pixel_size_um=w.get("pixel_size_um"), straighten=w.get("straighten", True))
+                    self.jobs.submit(spec)
+                    w["seen"].append(f)
+                    w["pending"].pop(f, None)
+                    w["queued"].append({"file": f, "name": name, "at": time.time()})
+                    changed = True
+                if changed:
+                    with self.lock:
+                        self._save()
+
+
 def _slug(name: str) -> str:
     import re
 
@@ -791,6 +888,26 @@ def create_app(config_paths: list[Path], db_path: Path | None = None, runs_root:
     @app.get("/api/jobs")
     def list_jobs():
         return jobs.list()
+
+    watcher = Watcher(runs_root, jobs)
+
+    @app.get("/api/watch")
+    def list_watch():
+        return watcher.list()
+
+    @app.post("/api/watch")
+    async def add_watch(request: Request):
+        body = await request.json()
+        try:
+            px = body.get("pixel_size_um")
+            return watcher.add(str(body.get("path") or ""), float(px) if px else None, bool(body.get("straighten", True)), bool(body.get("include_existing", False)))
+        except ValueError as e:
+            raise HTTPException(400, str(e)) from e
+
+    @app.delete("/api/watch")
+    def remove_watch(path: str):
+        watcher.remove(path)
+        return {"ok": True}
 
     @app.get("/api/health")
     def health():

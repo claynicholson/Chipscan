@@ -251,6 +251,17 @@
         <p class="hint">Without a design, a model finds traces and components from the image itself.</p>
       </div>
     </sl-details>
+    <sl-details summary="Live: watch a microscope folder" class="gds-details" id="watch-details">
+      <div class="form-col">
+        <p class="hint">Point this at the folder PRECiV saves to. Every new image is inspected automatically as soon as it has finished writing.</p>
+        <sl-input id="watch-path" size="small" placeholder="/Volumes/Microscope/Exports" clearable><sl-icon slot="prefix" name="broadcast"></sl-icon></sl-input>
+        <div class="form-row">
+          <sl-input id="watch-px" size="small" type="number" step="0.001" min="0.01" label="Pixel size (µm)" placeholder="0.814"></sl-input>
+          <sl-checkbox id="watch-existing" size="small">Also inspect images already there</sl-checkbox>
+        </div>
+        <sl-button id="watch-start" size="small" variant="default"><sl-icon slot="prefix" name="eye"></sl-icon>Start watching</sl-button>
+      </div>
+    </sl-details>
     <div id="upload-progress" class="upload-progress hidden">
       <div class="up-row"><span id="up-label">Uploading…</span><span id="up-pct" class="mono">0%</span></div>
       <sl-progress-bar id="up-bar" value="0"></sl-progress-bar>
@@ -261,6 +272,7 @@
 </sl-dialog>
 
 <sl-drawer id="jobs-drawer" label="Scans" placement="end" class="jobs-drawer">
+  <div id="watch-list" class="watch-list"></div>
   <div id="jobs-list" class="jobs-list"></div>
 </sl-drawer>
 
