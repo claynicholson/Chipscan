@@ -705,7 +705,9 @@ def create_app(config_paths: list[Path], db_path: Path | None = None, runs_root:
         if not f.exists():
             return {"available": False}
         m = json.loads(f.read_text())
-        rows = [s for s in m.get("summary", []) if s.get("n", 0) >= 20 and s.get("resolved", True)]
+        px = float(m.get("pixel_size_um") or 1.0)
+        # a feature narrower than ~3 px cannot be measured from its edge outlines
+        rows = [s for s in m.get("summary", []) if s.get("n", 0) >= 20 and s["nominal_um"] >= 3 * px]
         rows.sort(key=lambda s: -s["n"])
         return {"available": True, "pixel_size_um": m.get("pixel_size_um"), "structures": rows[:8], "measured": len(m.get("rows", []))}
 
