@@ -29,6 +29,8 @@ class WaferRegistration:
     field: np.ndarray  # (gh, gw, 2) px correction (dcol, drow) on a grid
     step: int  # grid spacing in level-0 px
     score: float = 0.0
+    frames: np.ndarray | None = None  # (fh, fw, 2) per camera frame offset (stitching), or None
+    frame_period: tuple[float, float] | None = None  # (x, y) camera frame size in px
 
     @property
     def pixel_size_um(self) -> float:
@@ -40,6 +42,12 @@ class WaferRegistration:
         r = np.atleast_1d(np.asarray(row, np.float64)).ravel() / self.step
         dc = ndi.map_coordinates(self.field[..., 0], [r, c], order=1, mode="nearest").reshape(shape)
         dr = ndi.map_coordinates(self.field[..., 1], [r, c], order=1, mode="nearest").reshape(shape)
+        if self.frames is not None and self.frame_period:
+            # a stitched mosaic moves frame by frame: piecewise constant on the camera grid
+            fx = np.clip((c * self.step / self.frame_period[0]).astype(int), 0, self.frames.shape[1] - 1)
+            fy = np.clip((r * self.step / self.frame_period[1]).astype(int), 0, self.frames.shape[0] - 1)
+            dc = dc + self.frames[fy, fx, 0].reshape(shape)
+            dr = dr + self.frames[fy, fx, 1].reshape(shape)
         return dc, dr
 
     def to_px(self, x_um, y_um):
@@ -66,12 +74,75 @@ class WaferRegistration:
         return (cv2.warpAffine(d, M, (w, h), flags=cv2.INTER_LINEAR) > 0.5).astype(np.uint8)
 
     def save(self, path: str | Path) -> None:
-        np.savez_compressed(path, affine=self.affine, field=self.field, step=self.step, score=self.score)
+        extra = {"frames": self.frames, "frame_period": np.asarray(self.frame_period)} if self.frames is not None else {}
+        np.savez_compressed(path, affine=self.affine, field=self.field, step=self.step, score=self.score, **extra)
 
     @staticmethod
     def load(path: str | Path) -> WaferRegistration:
         z = np.load(path)
-        return WaferRegistration(z["affine"], z["field"], int(z["step"]), float(z["score"]))
+        fr = z["frames"] if "frames" in z else None
+        fp = tuple(map(float, z["frame_period"])) if "frame_period" in z else None
+        return WaferRegistration(z["affine"], z["field"], int(z["step"]), float(z["score"]), fr, fp)
+
+
+_FR: dict = {}
+
+
+def _frame_init(src_path: str, gds_path: str, reg_path: str) -> None:
+    import torch  # noqa: F401
+
+    from chipscan.io.readers import PyramidSource
+
+    _FR.update(src=PyramidSource(src_path), wd=WaferDesign.load(gds_path), reg=WaferRegistration.load(reg_path))
+
+
+def _frame_shift(args):
+    fy, fx, c, r = args
+    m = measure_shift(_FR["src"], _FR["wd"], _FR["reg"], c, r, n=1024, level=0, min_ncc=0.35)
+    return fy, fx, m
+
+
+def frame_offsets(src_path: str, gds_path: str, reg_path: str, shape: tuple[int, int], period: tuple[float, float], mask=None, workers: int | None = None, progress=None) -> tuple[np.ndarray, np.ndarray]:
+    """Residual (dcol, drow) per camera frame, measured on a 1024 px tile in each frame's middle.
+    Frames without enough design structure take the median of their neighbours."""
+    from concurrent.futures import ProcessPoolExecutor
+
+    from chipscan import default_workers
+
+    H, W = shape
+    px, py = period
+    fw, fh = int(np.ceil(W / px)), int(np.ceil(H / py))
+    jobs = []
+    for fy in range(fh):
+        for fx in range(fw):
+            c, r = int(fx * px + px / 2 - 512), int(fy * py + py / 2 - 512)
+            if c < 0 or r < 0 or c + 1024 > W or r + 1024 > H:
+                continue
+            if mask is not None and not mask.any_in(c, r, c + 1024, r + 1024):
+                continue
+            jobs.append((fy, fx, c, r))
+    out = np.full((fh, fw, 2), np.nan)
+    score = np.zeros((fh, fw))
+    with ProcessPoolExecutor(max_workers=workers or default_workers(), initializer=_frame_init, initargs=(src_path, gds_path, reg_path)) as ex:
+        for i, (fy, fx, m) in enumerate(ex.map(_frame_shift, jobs, chunksize=8)):
+            if m is not None:
+                out[fy, fx] = m[:2]
+                score[fy, fx] = m[2]
+            if progress and i % 200 == 0:
+                progress(i, len(jobs))
+    # robust: a frame far from its neighbours locked onto a wrong period of a repeated structure
+    med = np.stack([ndi.generic_filter(out[..., k], np.nanmedian, size=3, mode="nearest") for k in (0, 1)], -1)
+    bad = np.hypot(*(out - med).transpose(2, 0, 1)) > 6
+    out[bad] = np.nan
+    filled = out.copy()
+    for _ in range(50):  # fill holes from neighbours
+        nanm = np.isnan(filled[..., 0])
+        if not nanm.any():
+            break
+        nb = np.stack([ndi.generic_filter(filled[..., k], np.nanmedian, size=3, mode="nearest") for k in (0, 1)], -1)
+        filled[nanm] = nb[nanm]
+    filled = np.nan_to_num(filled)
+    return filled, score
 
 
 def measure_shift(src: ImageSource, wd: WaferDesign, reg: WaferRegistration, c: int, r: int, n: int = 1024, level: int = 0, min_ncc: float = 0.3):
