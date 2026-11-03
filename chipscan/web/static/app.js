@@ -491,9 +491,14 @@
     safeDraw();
   }
 
+  // The same review zoom for every finding: it fills ~1/5 of the view, but never past 4 screen px per image
+  // px (tiny specks keep ~150 px of context to judge what they sit on); a big one shows whole with its surroundings.
+  const REVIEW_FILL = 0.2, REVIEW_MAX_ZOOM = 4;
   function findingFrame(d) {
-    const b = d.bbox_px;
-    return { cx: (b.x0 + b.x1) / 2, cy: (b.y0 + b.y1) / 2, size: Math.max(b.x1 - b.x0, b.y1 - b.y0) * 6 + 80 };
+    const b = d.bbox_px, ext = Math.max(b.x1 - b.x0, b.y1 - b.y0, 1);
+    const el = viewer && viewer.container, short = Math.min(el && el.clientWidth || 800, el && el.clientHeight || 600);
+    const z = Math.min((short * REVIEW_FILL) / ext, REVIEW_MAX_ZOOM);  // screen px per image px
+    return { cx: (b.x0 + b.x1) / 2, cy: (b.y0 + b.y1) / 2, size: short / z };
   }
 
   // warm the browser cache with the tiles a finding's view will ask for, so the next jump is sharp at once
