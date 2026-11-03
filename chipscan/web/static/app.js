@@ -168,6 +168,8 @@
       viewer.addTiledImage({ tileSource: tileSource("pred", "png"), opacity: $("layer-pred").checked ? 1 : 0, success: e => { layers.pred = e.item; } });
       updateZoom();
     });
+    // our review keys own the keyboard: OpenSeadragon's own (r rotates, arrows / w a s d pan, 0 homes) would fight them
+    viewer.addHandler("canvas-key", e => { e.preventDefaultAction = true; });
     viewer.addHandler("update-viewport", () => { safeDraw(); updateZoom(); });
     viewer.addHandler("resize", safeDraw);
     if (window.ResizeObserver) {
