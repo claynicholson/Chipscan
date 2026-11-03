@@ -537,25 +537,8 @@ def run_scan(spec: ScanSpec, runs_root: str | Path = ROOT / "runs", progress: Pr
         cmask = scan_mask(run_dir, src, px)
         meta["chip_fraction"] = round(cmask.fraction, 3)
 
-        # 3. layout -----------------------------------------------------------------
-        if finished("layout", "layout.zarr"):
-            cls = zarr.open_group(str(run_dir / "layout.zarr"), mode="r")["0"]
-        else:
-            stage("layout")
-            lg, cls = _new_map(run_dir / "layout.zarr", src.shape)
-            comp = lg.create_array("component_prob", shape=src.shape, chunks=(1024, 1024), dtype="uint8", fill_value=0)
-            TiledNet(spec.layout_model, spec.device).run(src, (cls, comp), tile_px=1024, progress=sub("layout"), mask=cmask)
-            design_info = {}
-            if spec.gds:
-                design_info = _apply_design(spec, src, cls, px)
-            _label_levels(lg)
-            done("layout", **design_info)
-
-        # 4/5. detectors ------------------------------------------------------------
-        if not finished("specks", "speck.zarr"):
-            stage("specks")
-            # one pass over the chip feeds all three networks (speck, anomaly, trace): each tile is
-            # read once; the trace map is a by-product the traces stage then keeps
+        def detector_jobs():
+            # speck, anomaly and trace nets: the trace map is a by-product the traces stage then keeps
             g, arr = _new_map(run_dir / "speck.zarr", src.shape)
             jobs = [(TiledNet(spec.speck_model, spec.device), arr)]
             if spec.anomaly_model and Path(spec.anomaly_model).exists():
@@ -563,7 +546,33 @@ def run_scan(spec: ScanSpec, runs_root: str | Path = ROOT / "runs", progress: Pr
                 jobs.append((TiledNet(spec.anomaly_model, spec.device), aa))
             gt, ta = _new_map(run_dir / "trace.zarr", src.shape)
             jobs.append((TiledNet(spec.trace_model, spec.device), ta))
-            run_nets(src, jobs, progress=lambda i, n: progress("specks", 0.6 * i / max(n, 1), dict(STAGES)["specks"]), mask=cmask)
+            return jobs
+
+        # 3. layout -----------------------------------------------------------------
+        # the layout net and the detector nets share ONE pass over the chip: each tile is read once
+        fused = False
+        if finished("layout", "layout.zarr"):
+            cls = zarr.open_group(str(run_dir / "layout.zarr"), mode="r")["0"]
+        else:
+            stage("layout")
+            lg, cls = _new_map(run_dir / "layout.zarr", src.shape)
+            comp = lg.create_array("component_prob", shape=src.shape, chunks=(1024, 1024), dtype="uint8", fill_value=0)
+            jobs = [(TiledNet(spec.layout_model, spec.device), (cls, comp))]
+            fused = not ("specks" in prev and (run_dir / "speck.zarr").exists())
+            if fused:
+                jobs += detector_jobs()
+            run_nets(src, jobs, progress=sub("layout"), mask=cmask)
+            design_info = {}
+            if spec.gds:
+                design_info = _apply_design(spec, src, cls, px)
+            _label_levels(lg)
+            done("layout", fused_detectors=fused, **design_info)
+
+        # 4/5. detectors ------------------------------------------------------------
+        if not finished("specks", "speck.zarr"):
+            stage("specks")
+            if not fused:  # layout came from an earlier run: the detector nets get their own pass
+                run_nets(src, detector_jobs(), progress=lambda i, n: progress("specks", 0.6 * i / max(n, 1), dict(STAGES)["specks"]), mask=cmask)
             gp, pa = _new_map(run_dir / "paddirt.zarr", src.shape)
             pad_dirt_map(src, pa, progress=lambda i, n: progress("specks", 0.6 + 0.1 * i / max(n, 1), dict(STAGES)["specks"]), mask=cmask)
             if spec.reference_threshold > 0:
