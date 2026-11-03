@@ -479,12 +479,44 @@
     const d = view[i];
     history.replaceState(null, "", `?run=${encodeURIComponent(run.name)}&d=${d.id}`);
     if (d && fly !== false && d.bbox_px && viewer) {
-      const b = d.bbox_px, size = Math.max(b.x1 - b.x0, b.y1 - b.y0) * 6 + 80;
-      const cx = (b.x0 + b.x1) / 2, cy = (b.y0 + b.y1) / 2;
-      viewer.viewport.fitBounds(imageRect(cx - size / 2, cy - size / 2, size, size), false);
+      const f = findingFrame(d);
+      // jump, don't fly: during review the animation (and the blurry tiles it passes over) is dead time
+      viewer.viewport.fitBounds(imageRect(f.cx - f.size / 2, f.cy - f.size / 2, f.size, f.size), true);
+      for (let k = 1; k <= 3; k++) prefetchFinding(view[i + k]);
+      prefetchFinding(view[i - 1]);
     }
     renderInspector();
     safeDraw();
+  }
+
+  function findingFrame(d) {
+    const b = d.bbox_px;
+    return { cx: (b.x0 + b.x1) / 2, cy: (b.y0 + b.y1) / 2, size: Math.max(b.x1 - b.x0, b.y1 - b.y0) * 6 + 80 };
+  }
+
+  // warm the browser cache with the tiles a finding's view will ask for, so the next jump is sharp at once
+  const prefetched = new Set();
+  function prefetchFinding(d) {
+    if (!d || !d.bbox_px || !viewer || !run) return;
+    const el = viewer.container, cw = el.clientWidth || 800, ch = el.clientHeight || 600;
+    const f = findingFrame(d), per = f.size / Math.min(cw, ch);  // image px per screen px
+    const top = run.levels - 1, base = Math.floor(Math.log2(Math.max(1, per / (window.devicePixelRatio || 1))));
+    const kinds = [["tiles", "jpg"]];
+    if ($("layer-pred").checked) kinds.push(["pred", "png"]);
+    // the sharp level and every coarser one (the viewer paints coarse tiles first; each level is 4x fewer)
+    for (let L = Math.min(base, top); L <= top; L++) {
+      const span = 256 * 2 ** L;
+      const x0 = Math.max(0, Math.floor((f.cx - (cw * per) / 2) / span)), x1 = Math.floor(Math.min(run.width - 1, f.cx + (cw * per) / 2) / span);
+      const y0 = Math.max(0, Math.floor((f.cy - (ch * per) / 2) / span)), y1 = Math.floor(Math.min(run.height - 1, f.cy + (ch * per) / 2) / span);
+      for (const [kind, ext] of kinds)
+        for (let y = y0; y <= y1; y++)
+          for (let x = x0; x <= x1; x++) {
+            const url = `/api/runs/${encodeURIComponent(run.name)}/${kind}/${L}/${x}/${y}.${ext}`;
+            if (prefetched.has(url)) continue;
+            prefetched.add(url);
+            new Image().src = url;
+          }
+    }
   }
 
   async function setReview(status, cls) {
@@ -801,7 +833,7 @@
     $("metro-body").addEventListener("click", e => {
       const tr = e.target.closest(".metro-row"); if (!tr || !viewer) return;
       const x = +tr.dataset.x, y = +tr.dataset.y, s = 400;
-      viewer.viewport.fitBounds(imageRect(x - s / 2, y - s / 2, s, s), false);
+      viewer.viewport.fitBounds(imageRect(x - s / 2, y - s / 2, s, s), true);
     });
     $("watch-list").addEventListener("click", async e => {
       const b = e.target.closest(".watch-stop"); if (!b) return;
