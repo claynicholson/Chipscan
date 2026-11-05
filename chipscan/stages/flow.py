@@ -268,8 +268,14 @@ def _check_one(item: tuple[dict, str]) -> tuple[dict, str | None]:
         # small specks sit right on letter strokes the layout net only partly calls text: wide margin.
         # Compact blobs survive inside "text" for the speck net and the pad rule (the layout net calls
         # dark particles text); the anomaly model fires on letters, so its finds do not
+        # the layout net also calls a lone particle "text" or "component": those two filters only
+        # speak where there is structure around the candidate (a letter, a device), never on open
+        # ground. On the 009-006 wafer they had dropped 95k candidates, nearly all real dirt
+        isolated = None
         if not suppress_text([d], cls, grow_px=10, keep_compact=d["source"] != "anomaly_model")[0]:
-            return d, "on_text"
+            isolated = _isolated(src, d) and not _part_of_larger(src, d)
+            if not isolated:
+                return d, "on_text"
         if d["source"] == "anomaly_model" and d["area_px"] > 3000:
             return d, "anomaly_too_big"
         # the scan's own border (black fill past the last camera frame / from straightening) is not dirt
@@ -280,7 +286,10 @@ def _check_one(item: tuple[dict, str]) -> tuple[dict, str | None]:
         if d["source"] == "reference" and not _isolated(src, d):
             return d, "reference_not_isolated"
         if not suppress_component_shapes([d], cls)[0]:
-            return d, "component_shape"
+            if isolated is None:
+                isolated = _isolated(src, d) and not _part_of_larger(src, d)
+            if not isolated:
+                return d, "component_shape"
         if not suppress_text_lines([d], src)[0]:
             return d, "lettering"
     # reference check: is the candidate explained by the same spot on its twins (other chips,
@@ -407,6 +416,34 @@ def _isolated(source: ImageSource, d: dict, ring_in: int = 3, ring_out: int = 8)
     sm = ndi.gaussian_filter(win, 1.0)
     busy = np.hypot(ndi.sobel(sm, 0), ndi.sobel(sm, 1)) > 0.12
     return bool(ring.any()) and float(busy[ring].mean()) < 0.1
+
+
+def _part_of_larger(source: ImageSource, d: dict, reach: int = 40, tol: float = 0.06) -> bool:
+    """Does the candidate continue into a bigger structure than itself (a designed outline, a
+    letter stroke), rather than ending where it ends (a particle, a fibre)? Everything that differs
+    from the local background and touches the candidate is followed out to `reach` px."""
+    import cv2
+    from scipy import ndimage as ndi
+
+    b = d["bbox_px"]
+    ext = max(b["x1"] - b["x0"], b["y1"] - b["y0"])
+    r = int(max(reach, ext))
+    x0, y0, x1, y1 = int(b["x0"]) - r, int(b["y0"]) - r, int(b["x1"]) + r, int(b["y1"]) + r
+    win = ndi.gaussian_filter(source.read_region(x0, y0, x1, y1).astype(np.float32) / 255.0, 1.0)
+    diff = np.abs(win - np.median(win)) > tol
+    own = np.zeros(win.shape, np.uint8)
+    polys = [np.rint(np.asarray(q) - [x0, y0]).astype(np.int32) for q in d.get("polygons_px") or [] if len(q) >= 3]
+    if polys:
+        cv2.fillPoly(own, polys, 1)
+    else:
+        own[r:-r, r:-r] = 1
+    lab, _ = ndi.label(diff)
+    touch = np.unique(lab[ndi.binary_dilation(own.astype(bool), iterations=2) & (lab > 0)])
+    if not len(touch):
+        return False
+    ys, xs = np.nonzero(np.isin(lab, touch))
+    grow = max(r - ys.min(), ys.max() - (win.shape[0] - r), r - xs.min(), xs.max() - (win.shape[1] - r))
+    return bool(grow > 12 + 0.5 * ext)
 
 
 def _grow_on_pads(source: ImageSource, d: dict, px: float, pad: int = 160) -> dict:
