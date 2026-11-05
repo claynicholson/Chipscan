@@ -220,6 +220,14 @@ def compare_group(patches: np.ndarray, z_min: float = 6.0, min_diff: float = 0.0
     return out
 
 
+def _lookalikes(flat: np.ndarray, k: int, n: int = 12, sim: float = 0.6, min_refs: int = 5) -> list[int] | None:
+    """Indices of the members of k's type that look most like it; None when there are too few to judge it."""
+    sims = flat @ flat[k]
+    sims[k] = -1
+    nn = [int(j) for j in np.argsort(sims)[::-1][:n] if sims[j] > sim]
+    return nn if len(nn) >= min_refs else None
+
+
 # ----------------------------------------------------------------------------- 5. pipeline
 class _ZarrRegion:
     """read_region over a plain 2-D (zarr) array, zero-padded outside."""
@@ -281,65 +289,52 @@ def component_errors(
         lines = []
         for ln in group_lines(insts, idx):
             lines += _split_by_look(ln, flat, pos)
-        in_line = {i for ln in lines for i in ln}
         summary["n_lines"] += len(lines)
-        groups = [(ln, "line") for ln in lines]
-        # members not on a usable line: compare with the most similar members of their type
-        rest = [i for i in idx if i not in in_line]
-        for i in rest:
-            sims = flat @ flat[pos[i]]
-            sims[pos[i]] = -1
-            nn = np.argsort(sims)[::-1][:24]
-            # a one-of-a-kind device has no reference: it cannot be judged, so it is not flagged
-            if (sims[nn] > 0.75).sum() < 5:
+        # every device against its closest look-alikes anywhere on the scan: a row can mix devices
+        # that share a footprint, so the row itself is no reference (it made a normal device look
+        # "deformed"); on planted damage this finds 27/36 where row medians found 6/36
+        for m in idx:
+            nn = _lookalikes(flat, pos[m])
+            if nn is None:  # a one-of-a-kind device has no reference: it cannot be judged
+                summary["n_unjudged"] = summary.get("n_unjudged", 0) + 1
                 continue
-            nn = [j for j in nn if sims[j] > 0.75]
-            groups.append(([idx[j] for j in nn] + [i], "type"))
-        for members, how in groups:
-            res = compare_group(P[[pos[m] for m in members]], z_min=z_min, footprint=foot)
-            targets = members if how == "line" else members[-1:]
-            res_t = res if how == "line" else res[-1:]
-            summary["n_compared"] += len(targets)
-            for m, r in zip(targets, res_t, strict=True):
-                bad_local = r["mask"] is not None
-                bad_global = r["ncc"] < min_ncc
-                if not (bad_local or bad_global):
-                    continue
-                d = insts[m]
-                h = size // 2
-                ox, oy = int(round(d["cx"])) - h, int(round(d["cy"])) - h
-                mask = r["mask"] if bad_local else np.zeros((size, size), bool)
-                if bad_global and not bad_local:  # whole device differs: outline its footprint
-                    x0, y0, x1, y1 = d["bbox"]
-                    mask[max(0, y0 - oy) : y1 - oy, max(0, x0 - ox) : x1 - ox] = True
-                cs, _ = cv2.findContours(mask.astype(np.uint8), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-                polys = [(c.reshape(-1, 2).astype(float) + [ox + 0.5, oy + 0.5]).round(2).tolist() for c in cs if len(c) >= 3]
-                ys, xs = np.nonzero(mask)
-                area = int(mask.sum())
-                bb = {"x0": float(xs.min() + ox), "y0": float(ys.min() + oy), "x1": float(xs.max() + 1 + ox), "y1": float(ys.max() + 1 + oy)}
-                cxx, cyy = float(xs.mean() + ox), float(ys.mean() + oy)
-                recs.append(
-                    {
-                        "id": nid,
-                        "group": "component",
-                        "kind": "component",
-                        "class": "component_deformed" if bad_global and not bad_local else "component_defect",
-                        "area_px": area,
-                        "score": float(min(1.0, max(r["z"] / 20.0, 1.0 - r["ncc"]))),
-                        "z": r["z"],
-                        "ncc": r["ncc"],
-                        "n_ref": len(members),
-                        "reference": how,
-                        "component_bbox_px": {"x0": d["bbox"][0], "y0": d["bbox"][1], "x1": d["bbox"][2], "y1": d["bbox"][3]},
-                        "bbox_px": bb,
-                        "centroid_px": [cxx, cyy],
-                        "polygons_px": polys,
-                        "area_um2": area * px * px,
-                        "centroid_um": [cxx * px, cyy * px],
-                        "bbox_um": {k: v * px for k, v in bb.items()},
-                    }
-                )
-                nid += 1
+            r = compare_group(P[nn + [pos[m]]], z_min=1.0, footprint=foot)[-1]
+            summary["n_compared"] += 1
+            if r["mask"] is None or r["z"] < z_min:
+                continue
+            members = [idx[j] for j in nn] + [m]
+            d = insts[m]
+            h = size // 2
+            ox, oy = int(round(d["cx"])) - h, int(round(d["cy"])) - h
+            mask = r["mask"]
+            cs, _ = cv2.findContours(mask.astype(np.uint8), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+            polys = [(c.reshape(-1, 2).astype(float) + [ox + 0.5, oy + 0.5]).round(2).tolist() for c in cs if len(c) >= 3]
+            ys, xs = np.nonzero(mask)
+            area = int(mask.sum())
+            bb = {"x0": float(xs.min() + ox), "y0": float(ys.min() + oy), "x1": float(xs.max() + 1 + ox), "y1": float(ys.max() + 1 + oy)}
+            cxx, cyy = float(xs.mean() + ox), float(ys.mean() + oy)
+            recs.append(
+                {
+                    "id": nid,
+                    "group": "component",
+                    "kind": "component",
+                    "class": "component_defect",
+                    "area_px": area,
+                    "score": float(min(1.0, r["z"] / 20.0)),
+                    "z": r["z"],
+                    "ncc": r["ncc"],
+                    "n_ref": len(members),
+                    "reference": "lookalikes",
+                    "component_bbox_px": {"x0": d["bbox"][0], "y0": d["bbox"][1], "x1": d["bbox"][2], "y1": d["bbox"][3]},
+                    "bbox_px": bb,
+                    "centroid_px": [cxx, cyy],
+                    "polygons_px": polys,
+                    "area_um2": area * px * px,
+                    "centroid_um": [cxx * px, cyy * px],
+                    "bbox_um": {k: v * px for k, v in bb.items()},
+                }
+            )
+            nid += 1
         # missing members in regular lines
         for ln in lines if report_missing else []:
             recs_m = _missing_in_line(source, insts, ln, P, pos, size, px, nid)

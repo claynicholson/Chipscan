@@ -58,6 +58,10 @@ class ScanSpec:
     report_traces: bool = False
     """Trace-error findings are off until the detector is reliable (on C1/B2 nearly all were designed corners)."""
     component_missing: bool = False  # missing-member reports need regular lines; off until validated per design
+    report_components: bool = False
+    """Device-vs-device comparison is off until it is validated on labelled damage: on AHQ1 A2 and the
+    009-006 wafers its flags were pad corners, stitching ghosts and design variants. Dirt on a device
+    is still found by the speck detectors."""
     min_area_px: int = 4
     layout_model: str = str(ROOT / "models" / "layout_v1.pt")
     speck_model: str = str(ROOT / "models" / "speck_v4.pt")
@@ -597,11 +601,13 @@ def run_scan(spec: ScanSpec, runs_root: str | Path = ROOT / "runs", progress: Pr
 
         # 6. components --------------------------------------------------------------
         stage("components")
-        insts = find_instances(cls)
-        comp_recs, csum = component_errors(src, insts, px, z_min=spec.component_z, progress=sub("components"), class_map=cls, report_missing=spec.component_missing)
-        comp_recs, csum["twin_dropped"] = _verify_components(src, comp_recs)
-        comp_recs, on_text = suppress_text(comp_recs, cls)
-        csum["on_text_dropped"] = len(on_text)
+        comp_recs, csum = [], {"skipped": True}
+        if spec.report_components:
+            insts = find_instances(cls)
+            comp_recs, csum = component_errors(src, insts, px, z_min=spec.component_z, progress=sub("components"), class_map=cls, report_missing=spec.component_missing)
+            comp_recs, csum["twin_dropped"] = _verify_components(src, comp_recs)
+            comp_recs, on_text = suppress_text(comp_recs, cls)
+            csum["on_text_dropped"] = len(on_text)
         done("components", **csum)
 
         # 7. risk ---------------------------------------------------------------------
@@ -677,11 +683,12 @@ def reprocess(run_dir: Path) -> dict:
     src = PyramidSource(run_dir / "corrected.zarr")
     px = spec.pixel_size_um or 1.0
     cls = zarr.open_group(str(run_dir / "layout.zarr"), mode="r")["0"]
-    insts = find_instances(cls)
-    comp_recs, csum = component_errors(src, insts, px, z_min=spec.component_z, class_map=cls, report_missing=spec.component_missing)
-    comp_recs, csum["twin_dropped"] = _verify_components(src, comp_recs)
-    comp_recs, on_text = suppress_text(comp_recs, cls)
-    csum["on_text_dropped"] = len(on_text)
+    comp_recs, csum = [], {"skipped": True}
+    if spec.report_components:
+        comp_recs, csum = component_errors(src, find_instances(cls), px, z_min=spec.component_z, class_map=cls, report_missing=spec.component_missing)
+        comp_recs, csum["twin_dropped"] = _verify_components(src, comp_recs)
+        comp_recs, on_text = suppress_text(comp_recs, cls)
+        csum["on_text_dropped"] = len(on_text)
     st_recs, info = extract_findings(run_dir, spec, src)
     (run_dir / "dropped.json").write_text(json.dumps(info.pop("dropped", [])))
     findings = st_recs + comp_recs
@@ -697,6 +704,38 @@ def reprocess(run_dir: Path) -> dict:
     meta["stages"].setdefault("risk", {}).update(info)
     (run_dir / "scan.json").write_text(json.dumps(meta, indent=2, default=str))
     return {"summary": summary, "components": csum, "extract": info}
+
+
+def refresh_components(run_dir: Path) -> dict:
+    """Redo only the component findings of a run (specks and traces are kept as they are)."""
+    from chipscan.stages.components import component_errors, find_instances
+    from chipscan.stages.risk import assess, suppress_text
+
+    run_dir = Path(run_dir)
+    meta = json.loads((run_dir / "scan.json").read_text())
+    spec = ScanSpec(**{k: v for k, v in meta["spec"].items() if k in ScanSpec.__dataclass_fields__})
+    src = PyramidSource(run_dir / "corrected.zarr")
+    px = spec.pixel_size_um or 1.0
+    cls = zarr.open_group(str(run_dir / "layout.zarr"), mode="r")["0"]
+    comp_recs, csum = [], {"skipped": True}
+    if spec.report_components:
+        comp_recs, csum = component_errors(src, find_instances(cls), px, z_min=spec.component_z, class_map=cls, report_missing=spec.component_missing)
+        comp_recs, csum["twin_dropped"] = _verify_components(src, comp_recs)
+        comp_recs, on_text = suppress_text(comp_recs, cls)
+        csum["on_text_dropped"] = len(on_text)
+        assess(comp_recs, cls, px, source=src)
+    rec = json.loads((run_dir / "findings.json").read_text())
+    findings = [d for d in rec["findings"] if d.get("group") != "component"] + comp_recs
+    findings.sort(key=lambda d: -d["risk"])
+    for i, d in enumerate(findings):
+        d["id"] = i
+    summary = _summary(findings)
+    (run_dir / "findings.json").write_text(json.dumps({"summary": summary, "findings": findings}))
+    _write_csv(run_dir / "findings.csv", findings)
+    meta["summary"] = summary
+    meta["stages"].setdefault("components", {}).update(csum)
+    (run_dir / "scan.json").write_text(json.dumps(meta, indent=2, default=str))
+    return {"summary": summary, "components": csum}
 
 
 def refresh_findings(run_dir: Path, spec: ScanSpec) -> list[dict]:
