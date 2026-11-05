@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import io
 import json
+import queue
 import sqlite3
 import threading
 import time
@@ -506,6 +507,63 @@ class Jobs:
             return sorted((json.loads(json.dumps(j)) for j in self.jobs.values()), key=lambda j: -j["created"])
 
 
+class Exports:
+    """Annotated image exports (overview PNG, full-resolution crop PNG, pyramid TIFF), one at a
+    time on a background thread; files go to <run>/exports/."""
+
+    KINDS = {"overview": "png", "crop": "png", "tiff": "tif"}
+
+    def __init__(self):
+        self.jobs: dict[str, dict] = {}
+        self.q: queue.Queue = queue.Queue()
+        self.lock = threading.Lock()
+        threading.Thread(target=self._worker, daemon=True).start()
+
+    def submit(self, run: Run, kind: str, findings: list[dict], width: int = 16000, bbox=None) -> dict:
+        if kind not in self.KINDS:
+            raise ValueError(f"unknown export {kind}")
+        stamp = time.strftime("%m%d_%H%M%S")
+        out = Path(run.out_dir) / "exports" / f"{run.name}_{kind}_{stamp}.{self.KINDS[kind]}"
+        jid = f"{run.name}-{kind}-{stamp}"
+        job = {"id": jid, "run": run.name, "kind": kind, "status": "queued", "progress": 0.0, "file": out.name, "size": None, "error": None, "created": time.time()}
+        with self.lock:
+            self.jobs[jid] = job
+        self.q.put((jid, run, kind, findings, width, bbox, out))
+        return dict(job)
+
+    def path(self, jid: str) -> Path | None:
+        with self.lock:
+            j = self.jobs.get(jid)
+        return None if j is None or j["status"] != "done" else Path(j["path"])
+
+    def list(self) -> list[dict]:
+        with self.lock:
+            return sorted(({k: v for k, v in j.items() if k != "path"} for j in self.jobs.values()), key=lambda j: -j["created"])
+
+    def _set(self, jid: str, **kw) -> None:
+        with self.lock:
+            self.jobs[jid].update(kw)
+
+    def _worker(self) -> None:
+        from chipscan import export_image as E
+
+        while True:
+            jid, run, kind, findings, width, bbox, out = self.q.get()
+            self._set(jid, status="running")
+            try:
+                out.parent.mkdir(parents=True, exist_ok=True)
+                title = run.name
+                if kind == "overview":
+                    E.overview(run.source, findings, out, width=width, title=title, px_um=run.pixel_size_um)
+                elif kind == "crop":
+                    E.crop(run.source, findings, out, bbox, title=title, px_um=run.pixel_size_um)
+                else:
+                    E.tiff(run.source, findings, out, progress=lambda i, n: self._set(jid, progress=round(i / max(n, 1), 3)), px_um=run.pixel_size_um)
+                self._set(jid, status="done", progress=1.0, path=str(out), size=out.stat().st_size)
+            except Exception as e:  # reported to the page, the server keeps going
+                self._set(jid, status="failed", error=f"{type(e).__name__}: {e}")
+
+
 IMAGE_EXT = {".png", ".jpg", ".jpeg", ".tif", ".tiff", ".jp2", ".bmp"}
 
 
@@ -636,6 +694,7 @@ def create_app(config_paths: list[Path], db_path: Path | None = None, runs_root:
         runs[r.name] = r
 
     jobs = Jobs(runs_root, add_run)
+    exports = Exports()
     resumed = jobs.resume_interrupted()
     if resumed:
         print(f"resuming interrupted scans: {', '.join(resumed)}", flush=True)
@@ -798,6 +857,36 @@ def create_app(config_paths: list[Path], db_path: Path | None = None, runs_root:
         p = r.out_dir / f"{r.name}.revisit_selected.xml"
         write_position_list(p, pos)
         return FileResponse(str(p), media_type="application/xml", filename=p.name)
+
+    @app.post("/api/runs/{name}/export-image")
+    async def export_image(name: str, request: Request):
+        """Queue an annotated image: kind overview (width px), crop (bbox in scan px) or tiff."""
+        from chipscan.export_image import select
+
+        r = get_run(name)
+        body = await request.json()
+        hidden = set()
+        if body.get("hide_false", True):
+            hidden = {i for i, v in db.get(name, r.defects).items() if v.get("status") == "false_alarm"}
+        findings = select(r.defects, include_low=bool(body.get("include_low", False)), hidden_ids=hidden)
+        bbox = body.get("bbox")
+        if body.get("kind") == "crop" and not (isinstance(bbox, list) and len(bbox) == 4):
+            raise HTTPException(400, "a crop needs bbox [x0, y0, x1, y1] in scan pixels")
+        try:
+            return exports.submit(r, str(body.get("kind")), findings, width=int(body.get("width") or 16000), bbox=bbox)
+        except ValueError as e:
+            raise HTTPException(400, str(e)) from e
+
+    @app.get("/api/exports")
+    def list_exports():
+        return exports.list()
+
+    @app.get("/api/exports/{jid}/file")
+    def export_file(jid: str):
+        p = exports.path(jid)
+        if p is None or not p.exists():
+            raise HTTPException(404, "export not ready")
+        return FileResponse(str(p), filename=p.name)
 
     @app.get("/api/runs/{name}/export.csv")
     def export_csv(name: str):

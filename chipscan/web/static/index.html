@@ -37,6 +37,9 @@
         <sl-button id="btn-positions" size="small" variant="default"><sl-icon slot="prefix" name="crosshair"></sl-icon>Re-image<sl-badge id="sel-count" pill variant="primary" class="hidden">0</sl-badge></sl-button>
       </sl-tooltip>
       <sl-button id="btn-export" size="small" variant="default" href="#" download><sl-icon slot="prefix" name="download"></sl-icon>Export CSV</sl-button>
+      <sl-tooltip content="The scan with its findings outlined: overview, current view, or full resolution">
+        <sl-button id="btn-export-image" size="small" variant="default"><sl-icon slot="prefix" name="image"></sl-icon>Export image</sl-button>
+      </sl-tooltip>
       <sl-divider vertical></sl-divider>
       <sl-input id="reviewer" size="small" placeholder="Reviewer" class="reviewer" clearable><sl-icon slot="prefix" name="person-circle"></sl-icon></sl-input>
       <sl-tooltip content="Keyboard shortcuts (?)">
@@ -275,6 +278,28 @@
   </form>
   <sl-button slot="footer" id="add-cancel" variant="default">Cancel</sl-button>
   <sl-button slot="footer" id="add-submit" variant="primary"><sl-icon slot="prefix" name="play-fill"></sl-icon>Start inspection</sl-button>
+</sl-dialog>
+
+<sl-dialog id="export-dialog" label="Export annotated image" class="add-dialog">
+  <div class="add-form">
+    <sl-radio-group id="ex-kind" size="small" value="overview" label="What to export">
+      <sl-radio value="overview">Whole scan, overview PNG</sl-radio>
+      <sl-radio value="crop">Current view, full resolution PNG</sl-radio>
+      <sl-radio value="tiff">Whole scan, full resolution pyramid TIFF</sl-radio>
+    </sl-radio-group>
+    <p class="hint" id="ex-hint"></p>
+    <sl-select id="ex-width" size="small" label="Overview width" value="16000">
+      <sl-option value="4000">4,000 px</sl-option>
+      <sl-option value="8000">8,000 px</sl-option>
+      <sl-option value="16000">16,000 px</sl-option>
+      <sl-option value="32000">32,000 px</sl-option>
+    </sl-select>
+    <sl-checkbox id="ex-low" size="small">Include low-risk findings</sl-checkbox>
+    <sl-checkbox id="ex-hide" size="small" checked>Leave out findings reviewed as false alarm</sl-checkbox>
+    <div id="ex-list" class="watch-list"></div>
+  </div>
+  <sl-button slot="footer" id="ex-close" variant="default">Close</sl-button>
+  <sl-button slot="footer" id="ex-go" variant="primary"><sl-icon slot="prefix" name="download"></sl-icon>Export</sl-button>
 </sl-dialog>
 
 <sl-drawer id="jobs-drawer" label="Scans" placement="end" class="jobs-drawer">

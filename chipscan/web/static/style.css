@@ -475,3 +475,4 @@ table.metro td { padding: 6px; border-top: 1px solid var(--border); }
 .metro-kind.gap { background: #eaf3ff; color: #0071e3; }
 .metro-kind.metal { background: #f3ecff; color: #8e44d9; }
 .metro-bad { color: #ff375f; font-weight: 600; }
+.err { color: #d70015; }

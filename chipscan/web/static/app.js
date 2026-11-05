@@ -709,7 +709,7 @@
     return e.composedPath().some(el => el.tagName && (["INPUT", "TEXTAREA", "SL-INPUT", "SL-SELECT", "SL-RANGE"].includes(el.tagName) || el.isContentEditable));
   }
   document.addEventListener("keydown", e => {
-    if (e.metaKey || e.ctrlKey || e.altKey || typingTarget(e) || $("help").open || $("add-dialog").open) return;
+    if (e.metaKey || e.ctrlKey || e.altKey || typingTarget(e) || $("help").open || $("add-dialog").open || $("export-dialog").open) return;
     if (e.key === "ArrowDown" || e.key === "j") { e.preventDefault(); setActive(Math.min(active + 1, view.length - 1), true); }
     else if (e.key === "ArrowUp" || e.key === "k") { e.preventDefault(); setActive(Math.max(active - 1, 0), true); }
     else if (e.key === "r") setReview("real");
@@ -721,6 +721,45 @@
     else if (e.key === "?") $("help").show();
     else if (e.key === "Escape") { setMeasuring(false); }
   });
+
+  // ---------------------------------------------------------------- annotated image export
+  const EX_HINT = {
+    overview: "The whole scan shrunk to the width below, findings ringed in their risk colours. Good for slides and posters.",
+    crop: "Exactly what is on screen now, at native resolution (a coarser level if it is very large).",
+    tiff: "Every pixel, zoomable. Several GB; opens in QuPath, Fiji or PRECiV, not Preview. Takes a while.",
+  };
+  let exTimer = 0;
+  function exKindChanged() {
+    const k = $("ex-kind").value;
+    $("ex-hint").textContent = EX_HINT[k] || "";
+    $("ex-width").classList.toggle("hidden", k !== "overview");
+  }
+  async function pollExports() {
+    clearTimeout(exTimer);
+    let list = [];
+    try { list = await api("/api/exports"); } catch (e) { return; }
+    $("ex-list").innerHTML = list.map(j => {
+      const label = { overview: "Overview", crop: "Current view", tiff: "Full TIFF" }[j.kind] || j.kind;
+      const state = j.status === "done" ? `<a href="/api/exports/${encodeURIComponent(j.id)}/file" download>Download${j.size ? " " + fmtBytes(j.size) : ""}</a>`
+        : j.status === "failed" ? `<span class="err">${esc(j.error || "failed")}</span>`
+        : `${j.status === "queued" ? "Queued" : "Working"}${j.kind === "tiff" && j.progress ? ` ${Math.round(j.progress * 100)}%` : "…"}`;
+      return `<div class="job"><div class="job-head"><b>${label}</b> · ${esc(j.run)}</div><div class="hint">${state}</div></div>`;
+    }).join("");
+    if (list.some(j => j.status === "queued" || j.status === "running")) exTimer = setTimeout(pollExports, 2000);
+  }
+  async function startExport() {
+    if (!run || !viewer) return;
+    const kind = $("ex-kind").value;
+    const body = { kind, include_low: $("ex-low").checked, hide_false: $("ex-hide").checked, width: +$("ex-width").value };
+    if (kind === "crop") {
+      const el = viewer.container, a = toImage(new OpenSeadragon.Point(0, 0)), b = toImage(new OpenSeadragon.Point(el.clientWidth, el.clientHeight));
+      body.bbox = [Math.floor(a.x), Math.floor(a.y), Math.ceil(b.x), Math.ceil(b.y)];
+    }
+    try {
+      await api(`/api/runs/${encodeURIComponent(run.name)}/export-image`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+    } catch (e) { fail(e); return; }
+    pollExports();
+  }
 
   function wire() {
     $("run").addEventListener("sl-change", () => { const v = $("run").value; if (v) openRun(runs[+v.slice(1)].name); });
@@ -832,6 +871,10 @@
 
     // jobs
     $("btn-jobs").addEventListener("click", () => { $("jobs-drawer").show(); pollJobs(true); });
+    $("btn-export-image").addEventListener("click", () => { exKindChanged(); $("export-dialog").show(); pollExports(); });
+    $("ex-kind").addEventListener("sl-change", exKindChanged);
+    $("ex-go").addEventListener("click", startExport);
+    $("ex-close").addEventListener("click", () => $("export-dialog").hide());
     $("jobs-list").addEventListener("click", e => { const b = e.target.closest(".job-open"); if (b) openByName(b.dataset.name); });
 
     $("reviewer").value = store.get("chipscan.reviewer") || "";
