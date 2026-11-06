@@ -88,12 +88,12 @@
     const wantedId = new URLSearchParams(location.search).get("d");
     history.replaceState(null, "", `?run=${encodeURIComponent(name)}`);
     const reg = run.registration || {};
-    const meta = [["Image", `${run.width.toLocaleString()} × ${run.height.toLocaleString()} px`], ["Pixel", `${fmt(run.pixel_size_um, 3)} µm`]];
+    const meta = [["", `${run.width.toLocaleString()} × ${run.height.toLocaleString()} px`], ["", `${fmt(run.pixel_size_um, 3)} µm/px`]];
     if (run.scan_run && run.scan) {
       const st = run.scan.straighten || {}, lay = run.scan.layout || {};
-      meta.push(["Tilt fixed", `${fmt(st.angle_deg, 3)}°`]);
-      meta.push(["Tiling", st.seams ? `fixed, ${(st.frame_px || []).map(v => Math.round(v)).join(" × ")} px frames` : "no seams"]);
-      meta.push(["Layout", lay.design_used ? "GDS + model" : "model"]);
+      meta.push(["tilt fixed", `${fmt(st.angle_deg, 3)}°`]);
+      meta.push(["tiling", st.seams ? `fixed, ${(st.frame_px || []).map(v => Math.round(v)).join(" × ")} px frames` : "no seams"]);
+      meta.push(["layout from", lay.design_used ? "GDS + model" : "model"]);
     } else {
       if (run.segmenter) meta.push(["Method", esc(run.segmenter)]);
       if (!run.anomaly_run && reg.rotation_deg != null) {
@@ -101,7 +101,8 @@
         meta.push(["Fine rms", run.fine_rms_px != null ? fmt(run.fine_rms_px) + " px" : "n/a"]);
       }
     }
-    $("runinfo").innerHTML = meta.map(([k, v]) => `<dt>${k}</dt><dd>${v}</dd>`).join("");
+    $("runinfo").innerHTML = meta.map(([k, v]) => k ? `${k} <b>${v}</b>` : `<b>${v}</b>`).join('<span class="sep">·</span>');
+    $("runinfo").title = meta.map(([k, v]) => k ? `${k}: ${v}` : v).join("\n");
     $("btn-export").href = `/api/runs/${encodeURIComponent(name)}/export.csv`;
     defects = await api(`/api/runs/${encodeURIComponent(name)}/defects`);
     selected.clear(); active = -1; updateSelCount();
