@@ -64,10 +64,9 @@ sl-divider[vertical] { height: 22px; --spacing: 4px; }
 .brand { display: flex; align-items: center; gap: 8px; font-weight: 700; font-size: 15px; letter-spacing: -.01em; color: var(--text); flex: none; }
 .brand svg { color: var(--accent); }
 .run-select { width: 260px; flex: none; }
-.runinfo {
-  flex: 1 1 auto; min-width: 0; display: flex; gap: 6px; overflow: hidden;
-  mask-image: linear-gradient(90deg, #000 calc(100% - 24px), transparent);
-}
+.runinfo { flex: 1 1 auto; min-width: 64px; display: flex; align-items: center; gap: 6px; overflow: hidden; }
+.runinfo .meta.more { cursor: default; color: var(--accent); background: var(--accent-soft); }
+.runinfo .meta[hidden] { display: none; }
 .runinfo .meta {
   flex: none; white-space: nowrap; font-size: 11.5px; color: var(--text-2);
   padding: 2px 8px; border: 1px solid var(--border); border-radius: 999px; background: var(--surface-2);
@@ -229,9 +228,6 @@ sl-range::part(form-control-help-text) { font-size: 11.5px; color: var(--text-3)
 /* ---------------------------------------------------------------- responsive */
 @media (max-width: 1360px) {
   :root { --left-w: 300px; --right-w: 280px; }
-  .runinfo { display: none; }
-  .appbar { justify-content: space-between; }
-  .appbar-actions { margin-left: auto; }
   .filters { flex-direction: column; }
   .stat { padding: 8px; }
   .stat-value { font-size: 16px; }
@@ -245,6 +241,7 @@ sl-range::part(form-control-help-text) { font-size: 11.5px; color: var(--text-3)
   .run-select { width: 200px; }
 }
 @media (max-width: 900px) {
+  .runinfo { display: none; }
   body { overflow: auto; }
   .app {
     height: auto; min-height: 100vh;
@@ -479,3 +476,10 @@ table.metro td { padding: 6px; border-top: 1px solid var(--border); }
 
 .heat-legend { align-items: center; margin-top: 8px; gap: 6px; flex-wrap: nowrap; }
 .heat-ramp { flex: 1; height: 8px; border-radius: 4px; background: linear-gradient(90deg, #000004, #420a68, #932667, #dd513a, #fca50a, #fcffa4); }
+
+/* narrower windows: toolbar buttons drop their words (tooltips still name them) so the run details keep room */
+@media (max-width: 1560px) {
+  .appbar-actions sl-button[data-squeeze]::part(label) { display: none; }
+  .appbar-actions sl-button[data-squeeze]::part(prefix) { margin: 0; }
+  .appbar-actions .reviewer { width: 130px; }
+}

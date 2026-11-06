@@ -82,6 +82,25 @@
     await openRun(name);
   }
 
+
+  // run details in the app bar: show the chips that fit whole, fold the rest into "+N" (hover lists them)
+  function fitRunInfo() {
+    const box = $("runinfo"), chips = [...box.querySelectorAll(".meta:not(.more)")], more = box.querySelector(".meta.more");
+    if (!more) return;
+    chips.forEach(c => { c.hidden = false; }); more.hidden = true;
+    const room = box.clientWidth;
+    if (box.scrollWidth <= room) return;
+    more.hidden = false;
+    let n = 0;
+    for (let i = chips.length - 1; i >= 0 && box.scrollWidth > room; i--) {
+      chips[i].hidden = true; n++;
+      more.textContent = `+${n} more`;
+    }
+    const gone = chips.filter(c => c.hidden).map(c => c.textContent);
+    more.title = gone.join("\n");
+    if (gone.length === chips.length) { more.textContent = "Details"; }
+  }
+
   async function openRun(name) {
     run = runs.find(r => r.name === name);
     const wantedId = new URLSearchParams(location.search).get("d");
@@ -104,7 +123,8 @@
         meta.push(`fine rms <b>${run.fine_rms_px != null ? fmt(run.fine_rms_px) + " px" : "n/a"}</b>`);
       }
     }
-    $("runinfo").innerHTML = meta.filter(Boolean).map(m => `<span class="meta">${m}</span>`).join("");
+    $("runinfo").innerHTML = meta.filter(Boolean).map(m => `<span class="meta">${m}</span>`).join("") + '<span class="meta more" hidden></span>';
+    fitRunInfo();
     $("btn-export").href = `/api/runs/${encodeURIComponent(name)}/export.csv`;
     defects = await api(`/api/runs/${encodeURIComponent(name)}/defects`);
     selected.clear(); active = -1; updateSelCount();
@@ -871,6 +891,7 @@
     $("layer-design").addEventListener("sl-change", e => { if (layers.design) layers.design.setOpacity(e.target.checked ? 1 : 0); });
     $("layer-pred").addEventListener("sl-change", e => { if (layers.pred) layers.pred.setOpacity(e.target.checked ? 1 : 0); });
     $("layer-defects").addEventListener("sl-change", safeDraw);
+    window.addEventListener("resize", fitRunInfo);
     $("layer-heat").addEventListener("sl-change", e => {
       const on = e.target.checked;
       $("heat-legend").classList.toggle("hidden", !on);

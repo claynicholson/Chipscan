@@ -27,18 +27,20 @@
     <div class="appbar-actions">
       <sl-button id="btn-add" size="small" variant="primary"><sl-icon slot="prefix" name="plus-lg"></sl-icon>Add scan</sl-button>
       <sl-tooltip content="Scans in progress">
-        <sl-button id="btn-jobs" size="small" variant="default" class="jobs-btn"><sl-icon slot="prefix" name="activity"></sl-icon>Jobs<sl-badge id="jobs-count" pill variant="primary" class="hidden" pulse>0</sl-badge></sl-button>
+        <sl-button id="btn-jobs" size="small" variant="default" data-squeeze class="jobs-btn"><sl-icon slot="prefix" name="activity"></sl-icon>Jobs<sl-badge id="jobs-count" pill variant="primary" class="hidden" pulse>0</sl-badge></sl-button>
       </sl-tooltip>
       <sl-divider vertical></sl-divider>
       <sl-tooltip content="Measure a line cut (M)">
-        <sl-button id="btn-measure" size="small" variant="default"><sl-icon slot="prefix" name="rulers"></sl-icon>Measure</sl-button>
+        <sl-button id="btn-measure" size="small" variant="default" data-squeeze><sl-icon slot="prefix" name="rulers"></sl-icon>Measure</sl-button>
       </sl-tooltip>
       <sl-tooltip content="Download a PRECiV position list for the defects you selected with X">
-        <sl-button id="btn-positions" size="small" variant="default"><sl-icon slot="prefix" name="crosshair"></sl-icon>Re-image<sl-badge id="sel-count" pill variant="primary" class="hidden">0</sl-badge></sl-button>
+        <sl-button id="btn-positions" size="small" variant="default" data-squeeze><sl-icon slot="prefix" name="crosshair"></sl-icon>Re-image<sl-badge id="sel-count" pill variant="primary" class="hidden">0</sl-badge></sl-button>
       </sl-tooltip>
-      <sl-button id="btn-export" size="small" variant="default" href="#" download><sl-icon slot="prefix" name="download"></sl-icon>Export CSV</sl-button>
+      <sl-tooltip content="Every finding with its review, as a spreadsheet">
+        <sl-button id="btn-export" size="small" variant="default" data-squeeze href="#" download><sl-icon slot="prefix" name="download"></sl-icon>Export CSV</sl-button>
+      </sl-tooltip>
       <sl-tooltip content="The scan with its findings outlined: overview, current view, or full resolution">
-        <sl-button id="btn-export-image" size="small" variant="default"><sl-icon slot="prefix" name="image"></sl-icon>Export image</sl-button>
+        <sl-button id="btn-export-image" size="small" variant="default" data-squeeze><sl-icon slot="prefix" name="image"></sl-icon>Export image</sl-button>
       </sl-tooltip>
       <sl-divider vertical></sl-divider>
       <sl-input id="reviewer" size="small" placeholder="Reviewer" class="reviewer" clearable><sl-icon slot="prefix" name="person-circle"></sl-icon></sl-input>
