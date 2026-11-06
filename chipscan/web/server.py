@@ -519,16 +519,21 @@ class Exports:
         self.lock = threading.Lock()
         threading.Thread(target=self._worker, daemon=True).start()
 
-    def submit(self, run: Run, kind: str, findings: list[dict], width: int = 16000, bbox=None) -> dict:
+    def submit(self, run: Run, kind: str, findings: list[dict], width: int = 16000, bbox=None, show_scan: bool = True) -> dict:
         if kind not in self.KINDS:
             raise ValueError(f"unknown export {kind}")
         stamp = time.strftime("%m%d_%H%M%S")
+        with self.lock:  # two exports queued in the same second get their own files
+            n, base = 1, stamp
+            while f"{run.name}-{kind}-{stamp}" in self.jobs:
+                n += 1
+                stamp = f"{base}_{n}"
         out = Path(run.out_dir) / "exports" / f"{run.name}_{kind}_{stamp}.{self.KINDS[kind]}"
         jid = f"{run.name}-{kind}-{stamp}"
         job = {"id": jid, "run": run.name, "kind": kind, "status": "queued", "progress": 0.0, "file": out.name, "size": None, "error": None, "created": time.time()}
         with self.lock:
             self.jobs[jid] = job
-        self.q.put((jid, run, kind, findings, width, bbox, out))
+        self.q.put((jid, run, kind, findings, width, bbox, out, show_scan))
         return dict(job)
 
     def path(self, jid: str) -> Path | None:
@@ -548,7 +553,7 @@ class Exports:
         from chipscan import export_image as E
 
         while True:
-            jid, run, kind, findings, width, bbox, out = self.q.get()
+            jid, run, kind, findings, width, bbox, out, show_scan = self.q.get()
             self._set(jid, status="running")
             try:
                 out.parent.mkdir(parents=True, exist_ok=True)
@@ -556,7 +561,11 @@ class Exports:
                 if kind == "overview":
                     E.overview(run.source, findings, out, width=width, title=title, px_um=run.pixel_size_um)
                 elif kind == "heatmap":
-                    E.heatmap(run.source, findings, out, width=width, title=title, px_um=run.pixel_size_um)
+                    mask = None
+                    mp = Path(run.out_dir) / "chipmask.npz"
+                    if not show_scan and mp.exists():
+                        mask = np.load(mp)["mask"]
+                    E.heatmap(run.source, findings, out, width=width, title=title, px_um=run.pixel_size_um, show_scan=show_scan, chip_mask=mask)
                 elif kind == "crop":
                     E.crop(run.source, findings, out, bbox, title=title, px_um=run.pixel_size_um)
                 else:
@@ -875,7 +884,7 @@ def create_app(config_paths: list[Path], db_path: Path | None = None, runs_root:
         if body.get("kind") == "crop" and not (isinstance(bbox, list) and len(bbox) == 4):
             raise HTTPException(400, "a crop needs bbox [x0, y0, x1, y1] in scan pixels")
         try:
-            return exports.submit(r, str(body.get("kind")), findings, width=int(body.get("width") or 16000), bbox=bbox)
+            return exports.submit(r, str(body.get("kind")), findings, width=int(body.get("width") or 16000), bbox=bbox, show_scan=bool(body.get("show_scan", True)))
         except ValueError as e:
             raise HTTPException(400, str(e)) from e
 

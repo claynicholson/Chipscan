@@ -83,3 +83,19 @@ def test_heatmap(tmp_path):
     hot, lone, empty = h[160], h[850], h[500]
     assert hot[160].sum() > lone[850].sum()  # the cluster is brighter than one stray finding
     assert np.ptp(empty[500]) < 10  # grey where there are none
+
+
+def test_heatmap_without_scan(tmp_path):
+    import cv2
+
+    a = np.full((2000, 2000), 200, np.uint8)
+    a[900:1100, :] = 30  # a "structure" that must not show
+    src = Pyr(a)
+    mask = np.zeros((200, 200), bool)
+    mask[20:180, 20:180] = True
+    fs = [_finding(i, 400 + i, 400, 3, "high") for i in range(30)]
+    E.heatmap(src, fs, tmp_path / "h.png", width=1000, cell_um=100, px_um=1.0, show_scan=False, chip_mask=mask)
+    h = cv2.imread(str(tmp_path / "h.png")).astype(int)
+    h = h[h.shape[0] - 1000 :]
+    assert np.ptp(h[500, 300:700]) < 6  # the dark band is gone: flat silhouette
+    assert h[50, 50].min() >= 250 and h[1500 // 2 + 100, 750].max() < 240  # white off the chip, grey on it

@@ -791,6 +791,7 @@
     const k = $("ex-kind").value;
     $("ex-hint").textContent = EX_HINT[k] || "";
     $("ex-width").classList.toggle("hidden", k !== "overview" && k !== "heatmap");
+    $("ex-noscan").classList.toggle("hidden", k !== "heatmap");
   }
   async function pollExports() {
     clearTimeout(exTimer);
@@ -808,7 +809,7 @@
   async function startExport() {
     if (!run || !viewer) return;
     const kind = $("ex-kind").value;
-    const body = { kind, include_low: $("ex-low").checked, hide_false: $("ex-hide").checked, width: +$("ex-width").value };
+    const body = { kind, include_low: $("ex-low").checked, hide_false: $("ex-hide").checked, width: +$("ex-width").value, show_scan: !(kind === "heatmap" && $("ex-noscan").checked) };
     if (kind === "crop") {
       const el = viewer.container, a = toImage(new OpenSeadragon.Point(0, 0)), b = toImage(new OpenSeadragon.Point(el.clientWidth, el.clientHeight));
       body.bbox = [Math.floor(a.x), Math.floor(a.y), Math.ceil(b.x), Math.ceil(b.y)];

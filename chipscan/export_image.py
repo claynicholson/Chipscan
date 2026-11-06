@@ -222,21 +222,35 @@ def density(findings: list[dict], shape: tuple[int, int], cell: float, sigma_cel
     return g
 
 
-def heatmap(src: ImageSource, findings: list[dict], out: Path, width: int = 8000, cell_um: float = 500.0, title: str = "", px_um: float = 1.0) -> Path:
+def heatmap(src: ImageSource, findings: list[dict], out: Path, width: int = 8000, cell_um: float = 500.0, title: str = "", px_um: float = 1.0,
+            show_scan: bool = True, chip_mask: np.ndarray | None = None) -> Path:
     """The scan in grey with a colour wash of how many findings there are per mm² (inferno: dark
     purple few, yellow most). The scale tops out at the 99th percentile so one dirty spot does
-    not wash the rest out; nothing is drawn where there are none."""
+    not wash the rest out; nothing is drawn where there are none.
+
+    show_scan=False leaves the scan out (no device is visible, so the picture can be shared): the
+    chip is a flat light-grey silhouette from `chip_mask` (any size, True on the chip), or plain
+    white without one."""
     H, W = src.shape
     width = min(width, W)
-    k = 0
-    while k + 1 < src.num_levels and W / 2 ** (k + 1) >= width:
-        k += 1
     height = int(round(H * width / W))
     s = W / width
-    base = cv2.resize(src.read_level(k), (width, height), interpolation=cv2.INTER_AREA)
-    if base.ndim == 3:
-        base = cv2.cvtColor(base, cv2.COLOR_RGB2GRAY)
-    base = cv2.cvtColor((base.astype(np.float32) * 0.55 + 40).astype(np.uint8), cv2.COLOR_GRAY2BGR)  # dimmed, so colour reads
+    if show_scan:
+        k = 0
+        while k + 1 < src.num_levels and W / 2 ** (k + 1) >= width:
+            k += 1
+        base = cv2.resize(src.read_level(k), (width, height), interpolation=cv2.INTER_AREA)
+        if base.ndim == 3:
+            base = cv2.cvtColor(base, cv2.COLOR_RGB2GRAY)
+        base = cv2.cvtColor((base.astype(np.float32) * 0.55 + 40).astype(np.uint8), cv2.COLOR_GRAY2BGR)  # dimmed, so colour reads
+    else:
+        base = np.full((height, width, 3), 255, np.uint8)
+        if chip_mask is not None:
+            m = cv2.resize(chip_mask.astype(np.uint8), (width, height), interpolation=cv2.INTER_NEAREST).astype(bool)
+            m = cv2.morphologyEx(m.astype(np.uint8), cv2.MORPH_CLOSE, np.ones((max(3, width // 200),) * 2, np.uint8)).astype(bool)  # a silhouette, not the streets
+            base[m] = (228, 226, 224)
+            cs, _ = cv2.findContours(m.astype(np.uint8), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+            cv2.drawContours(base, cs, -1, (170, 168, 165), max(1, width // 1500), cv2.LINE_AA)
 
     cell = max(1.0, cell_um / px_um)
     g = density(findings, (H, W), cell) / (cell_um / 1000) ** 2  # per mm²
