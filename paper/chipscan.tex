@@ -57,7 +57,7 @@ Fig.~\ref{fig:pipeline} shows the pipeline; no stage before the risk model depen
 
 \begin{figure*}[!t]
 \centering
-\includegraphics[width=\textwidth]{fig1_pipeline.png}
+\includegraphics[width=\textwidth]{fig1_pipeline.pdf}
 \caption{Processing pipeline. The upper path runs on every scan; the lower path runs only when the design file is available.}
 \label{fig:pipeline}
 \end{figure*}
@@ -133,7 +133,7 @@ Fig.~\ref{fig:training} reports validation metrics after each epoch. These tiles
 
 \begin{figure*}[!t]
 \centering
-\includegraphics[width=\textwidth]{fig2_training.png}
+\includegraphics[width=\textwidth]{fig2_training.pdf}
 \caption{Validation metrics per epoch. (a) Speck network speck\_v4: recall, precision and the fraction of clean tiles with a false detection. (b) Layout network: intersection over union (IoU) per class.}
 \label{fig:training}
 \end{figure*}
@@ -148,7 +148,7 @@ Fig.~\ref{fig:recall} breaks recall down by speck area and contrast for three ge
 
 \begin{figure*}[!t]
 \centering
-\includegraphics[width=\textwidth]{fig3_recall.png}
+\includegraphics[width=\textwidth]{fig3_recall.pdf}
 \caption{Recall of the full pipeline on 300 specks planted into held-out chip C1, by speck network. (a) By speck area. (b) By contrast against the local background. Group sizes are given under each axis label.}
 \label{fig:recall}
 \end{figure*}
@@ -157,7 +157,7 @@ Fig.~\ref{fig:tradeoff} places each configuration on a recall--false-alarm plane
 
 \begin{figure}[!t]
 \centering
-\includegraphics[width=\columnwidth]{fig4_tradeoff.png}
+\includegraphics[width=\columnwidth]{fig4_tradeoff.pdf}
 \caption{Recall versus detections per clean $768 \times 768$~px window on chip C1, for successive pipeline configurations.}
 \label{fig:tradeoff}
 \end{figure}
@@ -184,7 +184,7 @@ At wafer scale, individual outlines are unreadable, so the review interface aggr
 
 \begin{figure*}[!t]
 \centering
-\includegraphics[width=\textwidth]{fig5_heatmaps.png}
+\includegraphics[width=\textwidth]{fig5_heatmaps.jpg}
 \caption{Density of findings on the NFT1 wafer in 0.5~mm cells, drawn on the chip silhouette with the image hidden. (a) All 119{,}122 findings. (b) The 2{,}064 findings rated medium risk or higher.}
 \label{fig:heatmaps}
 \end{figure*}
@@ -194,7 +194,7 @@ On NFT1, 16{,}222 sites were measured; wafer 009-006~\#2 was registered by initi
 
 \begin{figure*}[!t]
 \centering
-\includegraphics[width=\textwidth]{fig6_metrology.png}
+\includegraphics[width=\textwidth]{fig6_metrology.pdf}
 \caption{Mean measured minus nominal width for CPW lines (metal) and gaps on two wafers of the same design, for widths measured at least 30 times. Error bars are one standard deviation.}
 \label{fig:metrology}
 \end{figure*}
@@ -204,7 +204,7 @@ A component check was also evaluated, which compares every instance of a repeate
 
 \begin{figure}[!t]
 \centering
-\includegraphics[width=\columnwidth]{fig7_components.png}
+\includegraphics[width=\columnwidth]{fig7_components.pdf}
 \caption{Planted device defects found (of 36) versus flags on the clean scan (67{,}448 devices) for the row-median reference and for the look-alike reference at thresholds $z = 4$ to 20.}
 \label{fig:components}
 \end{figure}

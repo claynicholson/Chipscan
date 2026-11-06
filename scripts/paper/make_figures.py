@@ -66,6 +66,17 @@ REPORTS = {  # planted-speck benchmark on held-out chip C1 (scripts/eval_specks.
 }
 
 
+def save(fig, out: Path, name: str) -> None:
+    """PNG for previews; PDF (vector) for LaTeX, except the raster heatmap, which goes in as JPEG."""
+    fig.savefig(out / f"{name}.png")
+    if name.startswith("fig5"):
+        import cv2
+
+        cv2.imwrite(str(out / f"{name}.jpg"), cv2.imread(str(out / f"{name}.png")), [cv2.IMWRITE_JPEG_QUALITY, 90])
+    else:
+        fig.savefig(out / f"{name}.pdf")
+
+
 def panel_label(ax, s):
     ax.text(0.5, -0.30, s, transform=ax.transAxes, ha="center", va="top")
 
@@ -109,7 +120,7 @@ def fig_pipeline(out: Path):
     arrow((35.5, y), (52.0, yb + h), dashed=True)  # corrected image feeds registration
     arrow((m[0] + m[2], yb + h / 2), (89.5, y), dashed=True)  # results join the review output
     ax.text(99.5, 22.8, "solid: every scan;  dashed: when the design is available", ha="right", va="top", fontsize=6.5, style="italic")
-    fig.savefig(out / "fig1_pipeline.png")
+    save(fig, out, "fig1_pipeline")
     plt.close(fig)
 
 
@@ -137,7 +148,7 @@ def fig_training(out: Path):
     b.legend(loc="lower right")
     panel_label(b, "(b)")
     fig.subplots_adjust(wspace=0.28, bottom=0.2)
-    fig.savefig(out / "fig2_training.png")
+    save(fig, out, "fig2_training")
     plt.close(fig)
 
 
@@ -172,7 +183,7 @@ def fig_benchmark(out: Path):
     panel_label(axes[0], "(a)")
     panel_label(axes[1], "(b)")
     fig.subplots_adjust(wspace=0.25, bottom=0.27, top=0.88)
-    fig.savefig(out / "fig3_recall.png")
+    save(fig, out, "fig3_recall")
     plt.close(fig)
 
 
@@ -189,7 +200,7 @@ def fig_tradeoff(out: Path):
     ax.set_ylabel("Recall (%)")
     ax.set_xlim(0, 1.4)
     ax.set_ylim(88, 94.5)
-    fig.savefig(out / "fig4_tradeoff.png")
+    save(fig, out, "fig4_tradeoff")
     plt.close(fig)
 
 
@@ -211,7 +222,7 @@ def fig_heatmaps(out: Path, all_png: Path, serious_png: Path, tops: tuple[float,
         cb.outline.set_linewidth(0.5)
         ax.text(0.5, -0.04, lab, transform=ax.transAxes, ha="center", va="top")
     fig.subplots_adjust(wspace=0.32)
-    fig.savefig(out / "fig5_heatmaps.png")
+    save(fig, out, "fig5_heatmaps")
     plt.close(fig)
 
 
@@ -234,7 +245,7 @@ def fig_metrology(out: Path):
     panel_label(axes[0], "(a)")
     panel_label(axes[1], "(b)")
     fig.subplots_adjust(wspace=0.08, bottom=0.24)
-    fig.savefig(out / "fig6_metrology.png")
+    save(fig, out, "fig6_metrology")
     plt.close(fig)
 
 
@@ -255,7 +266,7 @@ def fig_components(out: Path):
     ax.set_xlabel("Flags on the clean scan (of 67,448 devices)")
     ax.set_ylabel("Planted defects found (of 36)")
     ax.legend(loc="lower left")
-    fig.savefig(out / "fig7_components.png")
+    save(fig, out, "fig7_components")
     plt.close(fig)
 
 
