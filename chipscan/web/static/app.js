@@ -725,6 +725,7 @@
   // ---------------------------------------------------------------- annotated image export
   const EX_HINT = {
     overview: "The whole scan shrunk to the width below, findings ringed in their risk colours. Good for slides and posters.",
+    heatmap: "The scan in grey, coloured by how many findings there are per mm² (dark purple few, yellow most). Tick low-risk findings to map all dirt, not just the serious ones.",
     crop: "Exactly what is on screen now, at native resolution (a coarser level if it is very large).",
     tiff: "Every pixel, zoomable. Several GB; opens in QuPath, Fiji or PRECiV, not Preview. Takes a while.",
   };
@@ -732,14 +733,14 @@
   function exKindChanged() {
     const k = $("ex-kind").value;
     $("ex-hint").textContent = EX_HINT[k] || "";
-    $("ex-width").classList.toggle("hidden", k !== "overview");
+    $("ex-width").classList.toggle("hidden", k !== "overview" && k !== "heatmap");
   }
   async function pollExports() {
     clearTimeout(exTimer);
     let list = [];
     try { list = await api("/api/exports"); } catch (e) { return; }
     $("ex-list").innerHTML = list.map(j => {
-      const label = { overview: "Overview", crop: "Current view", tiff: "Full TIFF" }[j.kind] || j.kind;
+      const label = { overview: "Overview", heatmap: "Heatmap", crop: "Current view", tiff: "Full TIFF" }[j.kind] || j.kind;
       const state = j.status === "done" ? `<a href="/api/exports/${encodeURIComponent(j.id)}/file" download>Download${j.size ? " " + fmtBytes(j.size) : ""}</a>`
         : j.status === "failed" ? `<span class="err">${esc(j.error || "failed")}</span>`
         : `${j.status === "queued" ? "Queued" : "Working"}${j.kind === "tiff" && j.progress ? ` ${Math.round(j.progress * 100)}%` : "…"}`;

@@ -70,3 +70,16 @@ def test_small_crop_is_enlarged(tmp_path):
     E.crop(src, [_finding(0, 30, 30, 4, "critical")], tmp_path / "c.png", (0, 0, 64, 40))
     c = cv2.imread(str(tmp_path / "c.png"))
     assert c.shape[1] >= 1200
+
+
+def test_heatmap(tmp_path):
+    import cv2
+
+    src = Pyr(np.full((2000, 2000), 200, np.uint8))
+    fs = [_finding(i, 300 + (i % 10) * 5, 300 + (i // 10) * 5, 3, "high") for i in range(100)] + [_finding(999, 1700, 1700, 3, "high")]
+    E.heatmap(src, fs, tmp_path / "h.png", width=1000, cell_um=100, px_um=1.0)
+    h = cv2.imread(str(tmp_path / "h.png"))
+    h = h[h.shape[0] - 1000 :].astype(int)
+    hot, lone, empty = h[160], h[850], h[500]
+    assert hot[160].sum() > lone[850].sum()  # the cluster is brighter than one stray finding
+    assert np.ptp(empty[500]) < 10  # grey where there are none

@@ -508,10 +508,10 @@ class Jobs:
 
 
 class Exports:
-    """Annotated image exports (overview PNG, full-resolution crop PNG, pyramid TIFF), one at a
+    """Annotated image exports (overview PNG, heatmap PNG, full-resolution crop PNG, pyramid TIFF), one at a
     time on a background thread; files go to <run>/exports/."""
 
-    KINDS = {"overview": "png", "crop": "png", "tiff": "tif"}
+    KINDS = {"overview": "png", "heatmap": "png", "crop": "png", "tiff": "tif"}
 
     def __init__(self):
         self.jobs: dict[str, dict] = {}
@@ -555,6 +555,8 @@ class Exports:
                 title = run.name
                 if kind == "overview":
                     E.overview(run.source, findings, out, width=width, title=title, px_um=run.pixel_size_um)
+                elif kind == "heatmap":
+                    E.heatmap(run.source, findings, out, width=width, title=title, px_um=run.pixel_size_um)
                 elif kind == "crop":
                     E.crop(run.source, findings, out, bbox, title=title, px_um=run.pixel_size_um)
                 else:
@@ -860,7 +862,7 @@ def create_app(config_paths: list[Path], db_path: Path | None = None, runs_root:
 
     @app.post("/api/runs/{name}/export-image")
     async def export_image(name: str, request: Request):
-        """Queue an annotated image: kind overview (width px), crop (bbox in scan px) or tiff."""
+        """Queue an annotated image: kind overview or heatmap (width px), crop (bbox in scan px) or tiff."""
         from chipscan.export_image import select
 
         r = get_run(name)

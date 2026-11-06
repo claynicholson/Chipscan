@@ -1,5 +1,7 @@
 """Annotated images of a run: the scan with its findings outlined in their risk colours.
 
+heatmap   the whole scan in grey under a colour wash of findings per mm², PNG
+
 overview  the whole scan downscaled to `width` px, PNG
 crop      a rectangle at full resolution (a coarser pyramid level if it would pass `max_px`), PNG
 tiff      every pixel as a tiled, JPEG-compressed pyramid BigTIFF (QuPath, Fiji, PRECiV)
@@ -204,3 +206,72 @@ def tiff(src: ImageSource, findings: list[dict], out: Path, progress=None, tile:
                 maxworkers=default_workers(),
             )
     return out
+
+
+def density(findings: list[dict], shape: tuple[int, int], cell: float, sigma_cells: float = 1.0) -> np.ndarray:
+    """Findings per cell (cell x cell level-0 px) at their centres, smoothed over ~sigma_cells cells."""
+    H, W = shape
+    gh, gw = -(-H // int(cell)), -(-W // int(cell))
+    g = np.zeros((gh, gw), np.float32)
+    for d in findings:
+        b = d["bbox_px"]
+        cx, cy = (b["x0"] + b["x1"]) / 2, (b["y0"] + b["y1"]) / 2
+        g[min(gh - 1, max(0, int(cy // cell))), min(gw - 1, max(0, int(cx // cell)))] += 1
+    if sigma_cells > 0:
+        g = cv2.GaussianBlur(g, (0, 0), sigma_cells, borderType=cv2.BORDER_CONSTANT)
+    return g
+
+
+def heatmap(src: ImageSource, findings: list[dict], out: Path, width: int = 8000, cell_um: float = 500.0, title: str = "", px_um: float = 1.0) -> Path:
+    """The scan in grey with a colour wash of how many findings there are per mm² (inferno: dark
+    purple few, yellow most). The scale tops out at the 99th percentile so one dirty spot does
+    not wash the rest out; nothing is drawn where there are none."""
+    H, W = src.shape
+    width = min(width, W)
+    k = 0
+    while k + 1 < src.num_levels and W / 2 ** (k + 1) >= width:
+        k += 1
+    height = int(round(H * width / W))
+    s = W / width
+    base = cv2.resize(src.read_level(k), (width, height), interpolation=cv2.INTER_AREA)
+    if base.ndim == 3:
+        base = cv2.cvtColor(base, cv2.COLOR_RGB2GRAY)
+    base = cv2.cvtColor((base.astype(np.float32) * 0.55 + 40).astype(np.uint8), cv2.COLOR_GRAY2BGR)  # dimmed, so colour reads
+
+    cell = max(1.0, cell_um / px_um)
+    g = density(findings, (H, W), cell) / (cell_um / 1000) ** 2  # per mm²
+    pos = g[g > 1e-3]
+    top = float(np.percentile(pos, 99)) if pos.size else 1.0
+    top = max(top, 1e-6)
+    up = cv2.resize(g, (width, height), interpolation=cv2.INTER_CUBIC)
+    t = np.clip(up / top, 0, 1)
+    col = cv2.applyColorMap((t * 255).astype(np.uint8), cv2.COLORMAP_INFERNO)
+    a = np.clip(t * 4, 0, 0.85)[..., None]  # fades in from zero, keeps a hint of the chip under the worst
+    img = (base * (1 - a) + col * a).astype(np.uint8)
+    img = _heat_legend(img, title, len(findings), top, cell_um, px_um * s)
+    cv2.imwrite(str(out), img, [cv2.IMWRITE_PNG_COMPRESSION, 3])
+    return out
+
+
+def _heat_legend(img: np.ndarray, title: str, n: int, top: float, cell_um: float, um_per_px: float) -> np.ndarray:
+    w = img.shape[1]
+    f = max(0.8, w / 3500)
+    th = max(1, int(round(2 * f)))
+    hb = int(70 * f)
+    band = np.full((hb, w, 3), 255, np.uint8)
+    y = int(46 * f)
+    x = int(20 * f)
+    font = cv2.FONT_HERSHEY_SIMPLEX
+    head = f"{title}   {n:,} findings" if title else f"{n:,} findings"
+    cv2.putText(band, head, (x, y), font, 0.9 * f, (30, 30, 30), th, cv2.LINE_AA)
+    x += cv2.getTextSize(head, font, 0.9 * f, th)[0][0] + int(40 * f)
+    bw, bh = int(360 * f), int(18 * f)
+    ramp = cv2.applyColorMap(np.linspace(0, 255, bw).astype(np.uint8)[None].repeat(bh, 0), cv2.COLORMAP_INFERNO)
+    if x + bw + int(300 * f) < w:
+        cv2.putText(band, "0", (x, y), font, 0.7 * f, (30, 30, 30), th, cv2.LINE_AA)
+        x += int(24 * f)
+        band[y - bh : y, x : x + bw] = ramp
+        x += bw + int(10 * f)
+        lab = f"{top:,.3g}+ per sq mm  (counted in {cell_um:g} um squares)"
+        cv2.putText(band, lab, (x, y), font, 0.7 * f, (30, 30, 30), th, cv2.LINE_AA)
+    return np.vstack([band, img])
