@@ -1,20 +1,16 @@
-<p align="center">
-  <img src="chipscan/web/static/brand/rle-at-mit.png" alt="RLE at MIT" height="96">
-</p>
-
-<h1 align="center">Chip Scanner</h1>
+<img align="center" width="1296" height="360" alt="Group 94 (3)" src="https://github.com/user-attachments/assets/149f89e9-35f7-4fb3-bb2c-ca95c2ab493b" />
 
 <p align="center">
-  Automated optical inspection for superconducting quantum chips.<br>
-  One stitched microscope scan in → every speck, trace error and junction defect out, ranked by how likely it is to hurt the device.
+  Automated optical inspection for wafers.<br>
+  Microscope scan in -> annotated defects out
 </p>
 
 ---
 
 ## What it does
 
-A wafer-scale brightfield scan (Olympus DSX1000, ~0.8 µm/px, billions of pixels) is far too large to inspect
-by eye. Chip Scanner reads it, repairs the scan itself, then finds and ranks defects in three groups:
+A wafer-scale brightfield scan (such as the Olympus DSX1000, ~0.8 µm/px, billions of pixels) is far too slow to inspect
+by eye. Chip Scanner reads it, straightens and fixes the stitching in the scan, then finds and ranks defects in three groups:
 
 | Group | What it finds | How |
 |---|---|---|
@@ -50,7 +46,7 @@ scan ─► straighten ─► layout ─► specks ─► traces ─► componen
 
 No design file is required. With a GDS, the layout comes from the design instead of the network.
 
-## Quick start
+## Installation Guide
 
 ```bash
 brew install uv vips
@@ -59,22 +55,12 @@ uv run chipscan add /path/to/scan.png --name AFT5_C1 --pixel-size 0.814   # full
 uv run chipscan serve --runs runs                                         # http://localhost:8000
 ```
 
-You can also drag a scan into the viewer's **Add scan** dialog. On MIT ORCD Engaging, `scripts/engaging/run_scan.sbatch`
-runs the same flow on one GPU.
-
 ## Measuring it
 
 `scripts/eval_specks.py` plants realistic specks into a held-out scan that no model was trained on. It runs the
 complete pipeline, filters and twin checks included, and reports recall by speck size and contrast. It also reports
 the alarm rate on the same windows without planted specks.
 
-## Layout
-
-```
-chipscan/stages/   straighten · nets (UNets, training) · inject (painters) · reference · verify · components · risk · flow
-chipscan/web/      FastAPI + OpenSeadragon viewer
-scripts/           training, evaluation, cluster jobs
-```
 
 Design-referenced inspection against a GDS (registration, CD metrology, KLayout export) is documented in
 [docs/DESIGN_REFERENCED.md](docs/DESIGN_REFERENCED.md).
