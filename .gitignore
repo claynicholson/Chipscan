@@ -33,7 +33,7 @@ outputs/
 !docs/images/*.jpg
 
 # The paper stays out of the repo (it lives in Overleaf); scripts/paper/make_figures.py writes here
-paper/
+/paper/
 
 # macOS
 .DS_Store

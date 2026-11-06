@@ -270,6 +270,142 @@ def fig_components(out: Path):
     plt.close(fig)
 
 
+ZOOM_FIELDS_UM = (1500.0, 300.0, 75.0)
+
+
+def fig_zoom(out: Path, run: Path, ids: list[int]):
+    """Real findings on bare ground plane at three zoom levels. Every window used here was checked
+    to hold no patterned structure (scripts/paper/scout_open_ground.py), so no device is shown."""
+    import cv2
+    from matplotlib.patches import Circle, Polygon, Rectangle
+
+    from chipscan.io.readers import PyramidSource
+
+    src = PyramidSource(run / "corrected.zarr")
+    px = src.pixel_size_um or 1.6285
+    fs = json.loads((run / "findings.json").read_text())
+    fs = fs if isinstance(fs, list) else fs["findings"]
+    byid = {d["id"]: d for d in fs}
+    cent = np.array([d["centroid_px"] for d in fs])
+    fig, axes = plt.subplots(len(ids), 3, figsize=(COL, 1.2 * len(ids) + 0.25))
+    for row, fid in zip(np.atleast_2d(axes), ids):
+        cx0, cy0 = byid[fid]["centroid_px"]
+        h0 = ZOOM_FIELDS_UM[0] / px / 2
+        # zoom on the largest finding well inside the wide window
+        inner = [fs[j] for j in np.where((abs(cent[:, 0] - cx0) < 0.6 * h0) & (abs(cent[:, 1] - cy0) < 0.6 * h0))[0]]
+        tgt = max(inner, key=lambda d: d["size_um"])
+        centres = [(cx0, cy0), tuple(tgt["centroid_px"]), tuple(tgt["centroid_px"])]
+        wide = src.read_region(int(cx0 - h0), int(cy0 - h0), int(cx0 + h0), int(cy0 + h0), level=1).astype(np.float32)
+        # raw grey levels, the same mapping in every panel of a row; no contrast stretch
+        lo, hi = 0.0, 255.0
+        for k, (ax, field, (cx, cy)) in enumerate(zip(row, ZOOM_FIELDS_UM, centres)):
+            h = field / px / 2
+            x0, y0 = cx - h, cy - h
+            L = 1 if k == 0 else 0
+            img = src.read_region(int(x0), int(y0), int(cx + h), int(cy + h), level=L).astype(np.float32)
+            if img.ndim == 3:
+                img = cv2.cvtColor(img, cv2.COLOR_RGB2GRAY)
+            ax.imshow(np.clip((img - lo) / (hi - lo), 0, 1), cmap="gray", vmin=0, vmax=1, interpolation="nearest" if k else "lanczos", extent=(0, field, field, 0))
+            ax.set_xticks([])
+            ax.set_yticks([])
+            for sp in ax.spines.values():
+                sp.set_linewidth(0.6)
+            near = np.where((abs(cent[:, 0] - cx) < h) & (abs(cent[:, 1] - cy) < h))[0]
+            for j in near:
+                d = fs[j]
+                u, v = (d["centroid_px"][0] - x0) * px, (d["centroid_px"][1] - y0) * px
+                if k < 2:
+                    rr = max(field / 70, d["size_um"] * 0.7)
+                    ax.add_patch(Circle((u, v), rr, fill=False, lw=0.45, ec="#d62728"))
+                elif d.get("polygons_px"):
+                    for poly in d["polygons_px"]:
+                        q = (np.asarray(poly, float) - [x0, y0]) * px
+                        ax.add_patch(Polygon(q, closed=True, fill=False, lw=0.9, ec="#d62728"))
+            if k < 2:  # where the next panel looks
+                nf = ZOOM_FIELDS_UM[k + 1]
+                ncx, ncy = centres[k + 1]
+                ax.add_patch(Rectangle(((ncx - x0) * px - nf / 2, (ncy - y0) * px - nf / 2), nf, nf, fill=False, lw=0.8, ec="black", ls="--"))
+            bar = {1500.0: 250, 300.0: 50, 75.0: 10}[field]
+            ax.plot([field * 0.06, field * 0.06 + bar], [field * 0.93] * 2, color="black", lw=1.6, solid_capstyle="butt")
+            ax.text(field * 0.06 + bar / 2, field * 0.88, f"{bar} µm", ha="center", va="bottom", fontsize=5, bbox=dict(boxstyle="square,pad=0.1", fc="white", ec="none", alpha=0.85))
+            ax.set_xlim(0, field)
+            ax.set_ylim(field, 0)
+        row[0].set_ylabel(f"{tgt['size_um']:.0f} µm, risk {tgt['risk']:.0f}", fontsize=6)
+    for k, lab in enumerate(("(a) 1.5 mm", "(b) 300 µm", "(c) 75 µm")):
+        np.atleast_2d(axes)[-1][k].set_xlabel(lab, fontsize=7)
+    fig.subplots_adjust(wspace=0.05, hspace=0.05)
+    save(fig, out, "fig8_zoom")
+    plt.close(fig)
+
+
+def fig_many(out: Path, run: Path, centre_ids: list[int], field_um: float = 800.0):
+    """Bare-ground windows holding ~50 findings each, every finding ringed, plus the 16 largest of
+    the first window at full resolution. Windows checked structure-free (scout_open_ground.py)."""
+    import cv2
+    from matplotlib.patches import Circle, Polygon
+
+    from chipscan.io.readers import PyramidSource
+
+    src = PyramidSource(run / "corrected.zarr")
+    px = src.pixel_size_um or 1.6285
+    fs = json.loads((run / "findings.json").read_text())
+    fs = fs if isinstance(fs, list) else fs["findings"]
+    byid = {d["id"]: d for d in fs}
+    cent = np.array([d["centroid_px"] for d in fs])
+    fig = plt.figure(figsize=(DCOL, 2.55))
+    gs = fig.add_gridspec(1, 3, wspace=0.06)
+    h = field_um / px / 2
+    first_members = []
+    for k, fid in enumerate(centre_ids):
+        ax = fig.add_subplot(gs[0, k])
+        cx, cy = byid[fid]["centroid_px"]
+        img = src.read_region(int(cx - h), int(cy - h), int(cx + h), int(cy + h), level=0).astype(np.float32)
+        if img.ndim == 3:
+            img = cv2.cvtColor(img, cv2.COLOR_RGB2GRAY)
+        ax.imshow(img, cmap="gray", vmin=0, vmax=255, interpolation="lanczos", extent=(0, field_um, field_um, 0))
+        members = [fs[j] for j in np.where((abs(cent[:, 0] - cx) < h) & (abs(cent[:, 1] - cy) < h))[0]]
+        if k == 0:
+            first_members = members
+        for d in members:
+            u, v = (d["centroid_px"][0] - cx + h) * px, (d["centroid_px"][1] - cy + h) * px
+            ax.add_patch(Circle((u, v), max(field_um / 75, d["size_um"] * 0.7), fill=False, lw=0.45, ec="#d62728"))
+        ax.plot([field_um * 0.06, field_um * 0.06 + 100], [field_um * 0.93] * 2, color="black", lw=1.6, solid_capstyle="butt")
+        ax.text(field_um * 0.06 + 50, field_um * 0.88, "100 µm", ha="center", va="bottom", fontsize=5.5, bbox=dict(boxstyle="square,pad=0.1", fc="white", ec="none", alpha=0.85))
+        ax.text(field_um * 0.97, field_um * 0.05, f"{len(members)} findings", ha="right", va="top", fontsize=6, bbox=dict(boxstyle="square,pad=0.15", fc="white", ec="none", alpha=0.85))
+        ax.set_xlim(0, field_um)
+        ax.set_ylim(field_um, 0)
+        ax.set_xticks([])
+        ax.set_yticks([])
+        ax.set_xlabel(f"({'ab'[k]})", fontsize=7)
+    # gallery of the largest findings of window (a)
+    sub = gs[0, 2].subgridspec(4, 4, wspace=0.04, hspace=0.04)
+    big = sorted(first_members, key=lambda d: -d["size_um"])[:16]
+    for n, d in enumerate(big):
+        ax = fig.add_subplot(sub[n // 4, n % 4])
+        b = d["bbox_px"]
+        cx, cy = (b["x0"] + b["x1"]) / 2, (b["y0"] + b["y1"]) / 2
+        gallery_um = max(30.0, 1.6 * max(b["x1"] - b["x0"], b["y1"] - b["y0"]) * px)  # each tile framed to its finding
+        g = gallery_um / px / 2
+        img = src.read_region(int(cx - g), int(cy - g), int(cx + g), int(cy + g), level=0).astype(np.float32)
+        if img.ndim == 3:
+            img = cv2.cvtColor(img, cv2.COLOR_RGB2GRAY)
+        ax.imshow(img, cmap="gray", vmin=0, vmax=255, interpolation="nearest", extent=(0, gallery_um, gallery_um, 0))
+        for poly in d.get("polygons_px") or []:
+            q = (np.asarray(poly, float) - [cx - g, cy - g]) * px
+            ax.add_patch(Polygon(q, closed=True, fill=False, lw=0.5, ec="#d62728"))
+        ax.text(gallery_um * 0.05, gallery_um * 0.95, f"{d['size_um']:.0f} \u00b5m", fontsize=4.5, va="bottom", bbox=dict(boxstyle="square,pad=0.05", fc="white", ec="none", alpha=0.8))
+        ax.set_xlim(0, gallery_um)
+        ax.set_ylim(gallery_um, 0)
+        ax.set_xticks([])
+        ax.set_yticks([])
+        for sp in ax.spines.values():
+            sp.set_linewidth(0.4)
+        if n == 13:
+            ax.set_xlabel("(c)", fontsize=7, labelpad=3)
+    save(fig, out, "fig9_many")
+    plt.close(fig)
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--out", type=Path, default=ROOT / "paper" / "figures")
@@ -284,6 +420,9 @@ def main():
     fig_heatmaps(a.out, a.heat_all, a.heat_serious, (21.6, 1.28))
     fig_metrology(a.out)
     fig_components(a.out)
+    # findings on bare ground plane, each window checked structure-free with scout_open_ground.py
+    fig_zoom(a.out, ROOT / "runs/NFT1_wafer_speck_v4", [92088, 87008, 64241])
+    fig_many(a.out, ROOT / "runs/NFT1_wafer_speck_v4", [6475, 5210])
     print("figures in", a.out)
 
 

@@ -53,6 +53,16 @@ smear was low-risk dust.
 
 <p align="center"><img src="docs/images/fig5_heatmaps.jpg" width="100%" alt="Findings density heatmaps of the NFT1 wafer"></p>
 
+**What a finding looks like.** Real findings on bare ground plane, followed from a 1.5 mm field down to 75 µm (the
+windows were picked automatically for having no chip structure in them; grey levels as scanned).
+
+<p align="center"><img src="docs/images/fig8_zoom.jpg" width="60%" alt="Three findings on bare ground plane at 1.5 mm, 300 µm and 75 µm fields"></p>
+
+**Many at once.** Two 800 µm windows with about 50 findings each (a debris field and scattered fibres), and the 16
+largest of the first at full resolution.
+
+<p align="center"><img src="docs/images/fig9_many.jpg" width="100%" alt="Two windows with 52 and 44 findings, and a gallery of the largest"></p>
+
 **How much it finds.** 300 specks planted into a chip no model was trained on, run through the whole pipeline. Recall
 on specks under 12 px rose from 64% to 87% across three model versions; overall it is 93.3%.
 
