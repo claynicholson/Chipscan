@@ -398,6 +398,25 @@ class ReviewDB:
                 c.execute("DELETE FROM review_pos WHERE run=? AND cx=? AND cy=?", (run, ox, oy))
             c.execute("INSERT INTO review_pos (run, cx, cy, status, cls, note, reviewer, ts) VALUES (?,?,?,?,?,?,?,?)", (run, float(cx), float(cy), status, cls, note, reviewer, time.time()))
 
+    def merge_from(self, other: Path) -> int:
+        """Copy another review file's position-keyed reviews in; the newer of two at one spot wins.
+        The other file is left as it is. Returns how many rows were taken."""
+        if Path(other).resolve() == Path(self.path).resolve():
+            return 0
+        try:
+            with sqlite3.connect(str(other)) as o:
+                rows = o.execute("SELECT run, cx, cy, status, cls, note, reviewer, ts FROM review_pos").fetchall()
+        except sqlite3.Error:
+            return 0
+        n = 0
+        with self.lock, self._conn() as c:
+            for run, cx, cy, status, cls, note, reviewer, ts in rows:
+                have = c.execute("SELECT ts FROM review_pos WHERE run=? AND cx=? AND cy=?", (run, cx, cy)).fetchone()
+                if have is None or (ts or 0) > (have[0] or 0):
+                    c.execute("INSERT OR REPLACE INTO review_pos (run, cx, cy, status, cls, note, reviewer, ts) VALUES (?,?,?,?,?,?,?,?)", (run, cx, cy, status, cls, note, reviewer, ts))
+                    n += 1
+        return n
+
 
 class ReviewIn(BaseModel):
     defect_id: int
@@ -698,7 +717,12 @@ def create_app(config_paths: list[Path], db_path: Path | None = None, runs_root:
         else:
             r = Run.load_anomaly(p) if p.name.endswith(".anomalies.json") else Run.load(p)
         runs.setdefault(r.name, r)
-    db = ReviewDB(db_path or ((next(iter(runs.values())).out_dir if runs else runs_root) / "reviews.sqlite"))
+    # one review database for every scan, in the runs folder. (It used to live inside whichever scan
+    # loaded first, newest first, so a new scan hid the reviews: those per-scan files are merged in.)
+    db = ReviewDB(db_path or runs_root / "reviews.sqlite")
+    if db_path is None:
+        for old in sorted(runs_root.glob("*/reviews.sqlite")):
+            db.merge_from(old)
 
     def add_run(run_dir: Path) -> None:
         r = Run.load_scan(run_dir)
