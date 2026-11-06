@@ -16,18 +16,14 @@ by eye. Chip Scanner reads it, straightens and fixes the stitching in the scan, 
 |---|---|---|
 | **Specks** | dust, particles, fibres, residue, probe scrub marks | dedicated speck UNet + reference residual against identical chips + pad rule |
 | **Trace errors** | opens, shorts, bridges, nicks on wiring | dedicated trace UNet (off by default while being validated) |
-| **Component errors** | Josephson junctions that differ from their neighbours | look-alike junctions grouped into lines, each compared with the median of its line |
+| **Component errors** | devices that differ from their look-alikes | each device compared with its 12 most similar instances (off by default: still too noisy on real chips) |
 
 Each finding gets a **risk score from 0 to 100**. It goes up with the defect's size and with how close it sits to a
 junction or a trace. Dust on bare ground plane ranks low; a particle touching a JJ ranks critical.
 
 ## Pipeline
 
-```
-scan ─► straighten ─► layout ─► specks ─► traces ─► components ─► verify ─► risk ─► viewer
-        tilt + stitch   where are   UNet +     UNet      line-wise       compare      distance
-        frame shading   traces/JJs  reference            outliers        with twins   to JJs/traces
-```
+<p align="center"><img src="docs/images/fig1_pipeline.png" width="100%" alt="Pipeline: scan, pyramid, flat field and tilt correction, fused networks, candidates, verification and risk; with a GDS, registration and line-width metrology"></p>
 
 1. **Straighten.** Measures the stage tilt and the camera-frame grid of the mosaic, then removes per-frame shading,
    so stitching seams do not turn into "defects".
@@ -45,6 +41,44 @@ scan ─► straighten ─► layout ─► specks ─► traces ─► componen
    live sensitivity, and a review queue.
 
 No design file is required. With a GDS, the layout comes from the design instead of the network.
+
+## Results
+
+Tested on superconducting quantum circuit wafers and chips from MIT RLE (Olympus DSX1000 brightfield, 1.0–1.6 µm/px).
+Nothing in detection, verification or metrology is specific to that technology; only the risk table is.
+
+**Where the dirt is.** Findings per mm² on a full 100 mm wafer (119,122 findings), drawn with the scan hidden. Left:
+every finding, showing the wafer edge, reticle borders and a diagonal smear. Right: only medium risk and above; the
+smear was low-risk dust.
+
+<p align="center"><img src="docs/images/fig5_heatmaps.jpg" width="100%" alt="Findings density heatmaps of the NFT1 wafer"></p>
+
+**How much it finds.** 300 specks planted into a chip no model was trained on, run through the whole pipeline. Recall
+on specks under 12 px rose from 64% to 87% across three model versions; overall it is 93.3%.
+
+<p align="center"><img src="docs/images/fig3_recall.png" width="100%" alt="Recall by speck area and contrast for speck_v2, v3 and v4"></p>
+
+**What it costs.** Each gain in recall came with more detections on clean windows (most of them real dust in the scan).
+
+<p align="center"><img src="docs/images/fig4_tradeoff.png" width="60%" alt="Recall versus detections per clean window"></p>
+
+**Training.** Validation curves for the speck network (left) and the layout network (right), trained with no hand
+labels: defects are painted into clean tiles of the scans themselves.
+
+<p align="center"><img src="docs/images/fig2_training.png" width="100%" alt="Training curves"></p>
+
+**Line and gap widths.** With the GDS, widths are measured at more than 16,000 sites per wafer. Two wafers of the same
+design agree to 0.1 µm; nominal 10 µm gaps measure 8.76 and 8.75 µm.
+
+<p align="center"><img src="docs/images/fig6_metrology.png" width="100%" alt="Measured minus nominal width for lines and gaps on two wafers"></p>
+
+**Device comparison (off by default).** On 36 defects painted onto real devices, comparing each device with its
+look-alikes finds 27 at 54 false flags in 67,448 devices; comparing with its row found 6 at 719.
+
+<p align="center"><img src="docs/images/fig7_components.png" width="60%" alt="Planted device defects found versus false flags"></p>
+
+Regenerate the figures with `uv run python scripts/paper/make_figures.py` (writes `paper/figures/`, which is not
+tracked; the README copies are in `docs/images/`).
 
 ## Installation Guide
 
