@@ -27,7 +27,7 @@ data/
 *.pth
 runs/
 outputs/
-# except the README figures (plots of results; no scan imagery)
+# except the README figures (plots, scan-hidden heatmaps, crops of bare ground plane only)
 !docs/images/
 !docs/images/*.png
 !docs/images/*.jpg
