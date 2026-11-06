@@ -83,48 +83,25 @@
   }
 
 
-  // run details in the app bar: show the chips that fit whole, fold the rest into "+N" (hover lists them)
-  function fitRunInfo() {
-    const box = $("runinfo"), chips = [...box.querySelectorAll(".meta:not(.more)")], more = box.querySelector(".meta.more");
-    if (!more) return;
-    chips.forEach(c => { c.hidden = false; }); more.hidden = true;
-    const room = box.clientWidth;
-    if (box.scrollWidth <= room) return;
-    more.hidden = false;
-    let n = 0;
-    for (let i = chips.length - 1; i >= 0 && box.scrollWidth > room; i--) {
-      chips[i].hidden = true; n++;
-      more.textContent = `+${n} more`;
-    }
-    const gone = chips.filter(c => c.hidden).map(c => c.textContent);
-    more.title = gone.join("\n");
-    if (gone.length === chips.length) { more.textContent = "Details"; }
-  }
-
   async function openRun(name) {
     run = runs.find(r => r.name === name);
     const wantedId = new URLSearchParams(location.search).get("d");
     history.replaceState(null, "", `?run=${encodeURIComponent(name)}`);
     const reg = run.registration || {};
-    const meta = [
-      `<b>${run.width.toLocaleString()} × ${run.height.toLocaleString()}</b> px`,
-      `<b>${fmt(run.pixel_size_um, 3)}</b> µm/px`,
-    ];
+    const meta = [["Image", `${run.width.toLocaleString()} × ${run.height.toLocaleString()} px`], ["Pixel", `${fmt(run.pixel_size_um, 3)} µm`]];
     if (run.scan_run && run.scan) {
-      const st = run.scan.straighten || {};
-      meta.push(`tilt fixed <b>${fmt(st.angle_deg, 3)}°</b>`);
-      meta.push(st.seams ? `tiling fixed <b>${(st.frame_px || []).map(v => Math.round(v)).join(" × ")}</b> px frames` : "no tiling seams");
-      const lay = run.scan.layout || {};
-      meta.push(lay.design_used ? "layout from GDS + model" : "layout from model");
+      const st = run.scan.straighten || {}, lay = run.scan.layout || {};
+      meta.push(["Tilt fixed", `${fmt(st.angle_deg, 3)}°`]);
+      meta.push(["Tiling", st.seams ? `fixed, ${(st.frame_px || []).map(v => Math.round(v)).join(" × ")} px frames` : "no seams"]);
+      meta.push(["Layout", lay.design_used ? "GDS + model" : "model"]);
     } else {
-      meta.push(esc(run.segmenter || ""));
+      if (run.segmenter) meta.push(["Method", esc(run.segmenter)]);
       if (!run.anomaly_run && reg.rotation_deg != null) {
-        meta.push(`rot <b>${fmt(reg.rotation_deg)}°</b> · scale <b>${fmt(reg.scale, 4)}</b>${reg.flipped ? " · mirrored" : ""}`);
-        meta.push(`fine rms <b>${run.fine_rms_px != null ? fmt(run.fine_rms_px) + " px" : "n/a"}</b>`);
+        meta.push(["Registration", `rot ${fmt(reg.rotation_deg)}° · scale ${fmt(reg.scale, 4)}${reg.flipped ? " · mirrored" : ""}`]);
+        meta.push(["Fine rms", run.fine_rms_px != null ? fmt(run.fine_rms_px) + " px" : "n/a"]);
       }
     }
-    $("runinfo").innerHTML = meta.filter(Boolean).map(m => `<span class="meta">${m}</span>`).join("") + '<span class="meta more" hidden></span>';
-    fitRunInfo();
+    $("runinfo").innerHTML = meta.map(([k, v]) => `<dt>${k}</dt><dd>${v}</dd>`).join("");
     $("btn-export").href = `/api/runs/${encodeURIComponent(name)}/export.csv`;
     defects = await api(`/api/runs/${encodeURIComponent(name)}/defects`);
     selected.clear(); active = -1; updateSelCount();
@@ -891,7 +868,6 @@
     $("layer-design").addEventListener("sl-change", e => { if (layers.design) layers.design.setOpacity(e.target.checked ? 1 : 0); });
     $("layer-pred").addEventListener("sl-change", e => { if (layers.pred) layers.pred.setOpacity(e.target.checked ? 1 : 0); });
     $("layer-defects").addEventListener("sl-change", safeDraw);
-    window.addEventListener("resize", fitRunInfo);
     $("layer-heat").addEventListener("sl-change", e => {
       const on = e.target.checked;
       $("heat-legend").classList.toggle("hidden", !on);

@@ -23,7 +23,7 @@
     </div>
     <sl-divider vertical></sl-divider>
     <sl-select id="run" size="small" hoist class="run-select" placeholder="Select a run"></sl-select>
-    <div id="runinfo" class="runinfo"></div>
+    <div class="appbar-spacer"></div>
     <div class="appbar-actions">
       <sl-button id="btn-add" size="small" variant="primary"><sl-icon slot="prefix" name="plus-lg"></sl-icon>Add scan</sl-button>
       <sl-tooltip content="Scans in progress">
@@ -116,6 +116,7 @@
       <section class="card">
         <div class="card-head"><span>Overview</span></div>
         <div id="navigator-host" class="navigator-host"></div>
+        <dl id="runinfo" class="runinfo"></dl>
       </section>
 
       <section class="card" id="card-defect">
