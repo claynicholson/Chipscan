@@ -476,3 +476,6 @@ table.metro td { padding: 6px; border-top: 1px solid var(--border); }
 .metro-kind.metal { background: #f3ecff; color: #8e44d9; }
 .metro-bad { color: #ff375f; font-weight: 600; }
 .err { color: #d70015; }
+
+.heat-legend { align-items: center; margin-top: 8px; gap: 6px; flex-wrap: nowrap; }
+.heat-ramp { flex: 1; height: 8px; border-radius: 4px; background: linear-gradient(90deg, #000004, #420a68, #932667, #dd513a, #fca50a, #fcffa4); }

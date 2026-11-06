@@ -196,6 +196,63 @@
     return groupOn[d.group] !== false && levelOn[d.risk_level] !== false;
   }
 
+
+  // ---------------------------------------------------------------- live findings heatmap
+  // Findings per mm² in 500 µm squares, from what the list shows now (risk and group chips,
+  // search box), leaving out false alarms; rebuilt when those change, drawn under the outlines.
+  const HEAT_CELL_UM = 500;
+  const INFERNO = [[0, 0, 4], [66, 10, 104], [147, 38, 103], [221, 81, 58], [252, 165, 10], [252, 255, 164]];
+  let heat = null;  // { canvas, cell, top }
+  function heatColor(t) {
+    const x = t * (INFERNO.length - 1), i = Math.min(Math.floor(x), INFERNO.length - 2), f = x - i, a = INFERNO[i], b = INFERNO[i + 1];
+    return [a[0] + (b[0] - a[0]) * f, a[1] + (b[1] - a[1]) * f, a[2] + (b[2] - a[2]) * f];
+  }
+  function blur1d(g, w, h, horiz) {
+    const k = [0.054, 0.242, 0.399, 0.242, 0.054], out = new Float32Array(g.length);  // Gaussian, sigma 1 cell
+    for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
+      let v = 0;
+      for (let j = -2; j <= 2; j++) {
+        const xx = horiz ? x + j : x, yy = horiz ? y : y + j;
+        if (xx >= 0 && xx < w && yy >= 0 && yy < h) v += g[yy * w + xx] * k[j + 2];
+      }
+      out[y * w + x] = v;
+    }
+    return out;
+  }
+  function buildHeat() {
+    heat = null;
+    if (!run || !$("layer-heat").checked) return;
+    const px = run.pixel_size_um || 1, cell = HEAT_CELL_UM / px;
+    const gw = Math.max(1, Math.ceil(run.width / cell)), gh = Math.max(1, Math.ceil(run.height / cell));
+    let g = new Float32Array(gw * gh);
+    for (const d of view) {
+      const b = d.bbox_px; if (!b || d.review.status === "false_alarm") continue;
+      const cx = Math.min(gw - 1, Math.max(0, Math.floor((b.x0 + b.x1) / 2 / cell))), cy = Math.min(gh - 1, Math.max(0, Math.floor((b.y0 + b.y1) / 2 / cell)));
+      g[cy * gw + cx] += 1;
+    }
+    g = blur1d(blur1d(g, gw, gh, true), gw, gh, false);
+    const perMm2 = 1 / (HEAT_CELL_UM / 1000) ** 2;
+    const pos = Array.from(g).filter(v => v > 1e-3).sort((a, b) => a - b);
+    const top = Math.max(pos.length ? pos[Math.min(pos.length - 1, Math.floor(pos.length * 0.99))] : 1, 1e-6);
+    const c = document.createElement("canvas"); c.width = gw; c.height = gh;
+    const ctx = c.getContext("2d"), img = ctx.createImageData(gw, gh);
+    for (let i = 0; i < g.length; i++) {
+      const t = Math.min(g[i] / top, 1), rgb = heatColor(t);
+      img.data[4 * i] = rgb[0]; img.data[4 * i + 1] = rgb[1]; img.data[4 * i + 2] = rgb[2];
+      img.data[4 * i + 3] = Math.min(t * 4, 0.8) * 255;
+    }
+    ctx.putImageData(img, 0, 0);
+    heat = { canvas: c, cell, w: gw, h: gh };
+    $("heat-top").textContent = `${(top * perMm2).toLocaleString(undefined, { maximumSignificantDigits: 3 })}+ per mm²`;
+  }
+  function drawHeat(ctx) {
+    if (!heat) return;
+    const p0 = toScreen(0, 0), p1 = toScreen(heat.w * heat.cell, heat.h * heat.cell);
+    ctx.save(); ctx.imageSmoothingEnabled = true; ctx.imageSmoothingQuality = "high";
+    ctx.drawImage(heat.canvas, p0.x, p0.y, p1.x - p0.x, p1.y - p0.y);
+    ctx.restore();
+  }
+
   function drawOverlay() {
     const cv = $("overlay"), wrap = $("viewer-wrap"), dpr = window.devicePixelRatio || 1;
     const W = wrap.clientWidth, H = wrap.clientHeight;
@@ -206,6 +263,7 @@
     if (!viewer || !viewer.viewport || !run || !baseImage()) return;
     const zoom = imageZoom();
     const act = view[active];
+    drawHeat(ctx);
     if ($("layer-defects").checked) {
       // low risk first so the important outlines sit on top
       const order = run.scan_run ? [...defects].sort((a, b) => (a.risk || 0) - (b.risk || 0)) : defects;
@@ -331,6 +389,7 @@
     $("list-spacer").style.height = `${Math.max(view.length * ROW_H, 1)}px`;
     renderRows();
     renderChips();
+    buildHeat();
     safeDraw();
   }
 
@@ -534,7 +593,7 @@
       await api(`/api/runs/${encodeURIComponent(run.name)}/review`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
     } catch (e) { fail(e); return; }
     d.review = { ...d.review, status: body.status, cls: body.cls, reviewer: body.reviewer };
-    renderRows(); renderInspector(); safeDraw(); refreshStats();
+    renderRows(); renderInspector(); buildHeat(); safeDraw(); refreshStats();
   }
 
   function toggleSelected() {
@@ -812,6 +871,13 @@
     $("layer-design").addEventListener("sl-change", e => { if (layers.design) layers.design.setOpacity(e.target.checked ? 1 : 0); });
     $("layer-pred").addEventListener("sl-change", e => { if (layers.pred) layers.pred.setOpacity(e.target.checked ? 1 : 0); });
     $("layer-defects").addEventListener("sl-change", safeDraw);
+    $("layer-heat").addEventListener("sl-change", e => {
+      const on = e.target.checked;
+      $("heat-legend").classList.toggle("hidden", !on);
+      // 100k outlines bury the colour: hide them while the heatmap is on, bring them back after
+      $("layer-defects").checked = !on;
+      buildHeat(); safeDraw();
+    });
 
     $("thr").tooltipFormatter = v => v.toFixed(2);
     $("thr-speck").tooltipFormatter = v => v.toFixed(2);
